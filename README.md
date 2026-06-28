@@ -110,12 +110,14 @@ FEL 支持仍按上游说明视为实验性功能。更完整的技术细节见 
 
 当前默认值：
 
-- `render.osc: true`，允许 Studio 连接并监控播放。
-- `render.osc_metering: true`，允许 Studio 接收电平数据。
-- `render.auto_gain: true`，并将自动增益上限设为 `-3.0 dB`。
-- `render.binaural.output_mode: binaural`，面向耳机双耳播放。
-- `render.binaural.hrir_source: saf`。
-- 关闭 reflections 和 reverb，保留更干净、保守的默认听感。
+- `render.current_layout` 定义 7.1.4 风格的扬声器布局：`FL`、`FR`、`C`、`LFE`、`BL`、`BR`、`SL`、`SR`、`TFL`、`TFR`、`TBL`、`TBR`，布局半径 `radius_m: 1.5`。
+- 所有扬声器使用 `coord_mode: cartesian` 和 `delay_ms: 0.0`；除 `LFE` 外都启用 `spatialize: true`，`LFE` 保持 `spatialize: false`。
+- `render.vbap_elevation_resolution: 90`，评估网格为 `62 x 62 x 15`，负向 Z 网格为 `0`。
+- `render.master_gain: 6.0206003`，`render.auto_gain: true`。当前配置文件没有设置单独的 `auto_gain_ceiling_db`。
+- 房间参数为 `room_width_m: 3.0`、`room_front_m: 1.75`、`room_rear_m: 1.75`、`room_height_m: 1.2`、`room_lower_m: 1.2`，中心混合比例 `room_ratio_center_blend: 0.5`。
+- `render.osc: true`、`render.osc_metering: true`，允许 Studio 连接、监控播放并接收电平数据；`meter_rate` 和 `diag_rate` 均为 `10.0`。
+- `render.binaural.output_mode: binaural`，面向耳机双耳播放；`unit_scale_m: 1.5`、`head_radius_m: 0.0875`、`hrir_source: saf`、`head_tracking.format: auto`，并启用 `air_absorption: true`。
+- 关闭 reflections 和 reverb，保留更干净、保守的默认听感；反射模型保留 `4.0 x 5.0 x 2.7 m` 的房间尺寸但 `level: 0.0`。
 
 ### `overlay-prefs.conf`
 
