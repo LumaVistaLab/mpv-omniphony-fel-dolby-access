@@ -1,0 +1,23 @@
+# Conservative Omniphony headphone profile.
+# The playback script passes the detected bridge path at launch time.
+render:
+  osc: true
+  osc_metering: true
+  auto_gain: true
+  auto_gain_ceiling_db: -3.0
+  binaural:
+    output_mode: binaural
+    hrir_source: saf
+    unit_scale_m: 1.0
+    air_absorption: true
+    head_tracking:
+      osc_address: ""
+      format: auto
+    reflections:
+      enabled: false
+      level: 0.0
+    reverb:
+      enabled: false
+      level: 0.0
+      rt60_s: 0.35
+      predelay_ms: 20
