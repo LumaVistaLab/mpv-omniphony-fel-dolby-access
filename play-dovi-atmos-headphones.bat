@@ -54,8 +54,8 @@ echo ERROR: movie path is empty.
 exit /b 1
 
 :movie_path_not_empty
-if "%MOVIE:~0,1%"=="""" set "MOVIE=%MOVIE:~1%"
-if "%MOVIE:~-1%"=="""" set "MOVIE=%MOVIE:~0,-1%"
+rem Drag-and-drop or copied paths may include wrapping quotes.
+set "MOVIE=%MOVIE:"=%"
 
 if exist "%MOVIE%" goto :movie_exists
 echo ERROR: movie file not found:
