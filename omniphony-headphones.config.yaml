@@ -1,4 +1,5 @@
-# Conservative Omniphony headphone profile.
+# Omniphony 7.1.4 speaker profile (speaker output is the default).
+# Master gain is shared by the speaker and binaural paths and is set to 0 dB.
 # The playback script passes the detected bridge path at launch time.
 render:
   current_layout:
@@ -93,7 +94,7 @@ render:
   evaluation_cartesian_y_size: 62
   evaluation_cartesian_z_size: 15
   evaluation_cartesian_z_neg_size: 0
-  master_gain: 6.0206003
+  master_gain: 0.0
   room_width_m: 3.0
   room_front_m: 1.75
   room_rear_m: 1.75
@@ -106,7 +107,7 @@ render:
   meter_rate: 10.0
   diag_rate: 10.0
   binaural:
-    output_mode: binaural
+    output_mode: speaker
     unit_scale_m: 1.5
     head_radius_m: 0.0875
     hrir_source: saf

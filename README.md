@@ -1,7 +1,7 @@
 # Dolby Vision·Atmos Batch Player
 
 这是一个面向 Windows 的播放辅助项目，用来通过带 Omniphony 集成的 mpv
-播放 Dolby Vision·Atmos 影片。仓库把启动脚本、耳机渲染配置和 overlay
+播放 Dolby Vision·Atmos 影片。仓库把启动脚本、7.1.4 扬声器渲染配置和 overlay
 偏好放在一起，日常使用时可以双击批处理脚本，也可以从命令行传入影片路径。
 
 脚本本身保持很小：它会在本地 `releases` 目录下递归寻找 mpv 可执行文件和
@@ -12,7 +12,7 @@
 - 使用 `mpv-omniphony` 的 `--ad=orender` 走空间音频渲染链路。
 - 启动时自动把 `harletty_bridge.dll` 传给 orender。
 - 启用 Omniphony OSC，方便 Omniphony Studio 显示实时对象位置和电平。
-- 默认使用偏保守的双耳耳机配置，并启用自动增益。
+- 默认使用 7.1.4 扬声器模式输出，并启用自动增益；扬声器和耳机模式共用的 Master Gain 设为 `0 dB`。
 - 视频侧使用 `gpu-next` 和 `target-colorspace-hint`，适合现代 HDR /
   Dolby Vision·Atmos 相关播放路径。
 - 支持 Dolby Vision Profile 7.6 FEL（Full Enhancement Layer）片源；当前 `mpv-omniphony-fel-windows-x86_64` 运行包来自上游 FEL beta 构建。
@@ -51,6 +51,9 @@ releases/
 - [Omniphony Studio 0.4.1 Windows x64 installer](https://github.com/mgth/Omniphony/releases/download/v0.4.1/Omniphony.Studio_0.4.1_x64-setup.exe)
 
 下载后请把 mpv zip 和 bridge zip 解压到 `releases/` 下；Omniphony Studio 使用安装程序正常安装，不需要解压到本仓库。
+
+> 推荐使用默认的 7.1.4 扬声器模式，并为当前 Windows 音频输出设备安装、配置 Dolby Access，启用与设备匹配的 Dolby Atmos 空间音效模式。Dolby Access 的可用选项取决于输出设备及其驱动。
+
 ## 快速开始
 
 1. 下载并解压 `mpv-omniphony-fel-windows-x86_64.zip` 到 `releases/` 下。
@@ -106,17 +109,18 @@ FEL 支持仍按上游说明视为实验性功能。更完整的技术细节见 
 
 ### `omniphony-headphones.config.yaml`
 
-这是批处理脚本传给 orender 的主渲染配置。
+这是批处理脚本传给 orender 的主渲染配置。文件名保留了 `headphones`，但当前默认输出是 7.1.4 扬声器模式。
 
 当前默认值：
 
 - `render.current_layout` 定义 7.1.4 风格的扬声器布局：`FL`、`FR`、`C`、`LFE`、`BL`、`BR`、`SL`、`SR`、`TFL`、`TFR`、`TBL`、`TBR`，布局半径 `radius_m: 1.5`。
 - 所有扬声器使用 `coord_mode: cartesian` 和 `delay_ms: 0.0`；除 `LFE` 外都启用 `spatialize: true`，`LFE` 保持 `spatialize: false`。
 - `render.vbap_elevation_resolution: 90`，评估网格为 `62 x 62 x 15`，负向 Z 网格为 `0`。
-- `render.master_gain: 6.0206003`，`render.auto_gain: true`。当前配置文件没有设置单独的 `auto_gain_ceiling_db`。
+- `render.master_gain: 0.0`（`0 dB`），`render.auto_gain: true`。Master Gain 由扬声器和双耳耳机路径共用，因此两种模式的初始 Master Gain 都是 `0 dB`；当前配置文件没有设置单独的 `auto_gain_ceiling_db`。
 - 房间参数为 `room_width_m: 3.0`、`room_front_m: 1.75`、`room_rear_m: 1.75`、`room_height_m: 1.2`、`room_lower_m: 1.2`，中心混合比例 `room_ratio_center_blend: 0.5`。
 - `render.osc: true`、`render.osc_metering: true`，允许 Studio 连接、监控播放并接收电平数据；`meter_rate` 和 `diag_rate` 均为 `10.0`。
-- `render.binaural.output_mode: binaural`，面向耳机双耳播放；`unit_scale_m: 1.5`、`head_radius_m: 0.0875`、`hrir_source: saf`、`head_tracking.format: auto`，并启用 `air_absorption: true`。
+- `render.binaural.output_mode: speaker`，默认通过 7.1.4 VBAP 扬声器路径输出。推荐保持此模式并配合 Dolby Access 使用；如需改用内置双耳耳机渲染，可将其改为 `binaural`，然后重启 mpv。
+- 双耳模式参数保留为 `unit_scale_m: 1.5`、`head_radius_m: 0.0875`、`hrir_source: saf`、`head_tracking.format: auto`，并启用 `air_absorption: true`。
 - 关闭 reflections 和 reverb，保留更干净、保守的默认听感；反射模型保留 `4.0 x 5.0 x 2.7 m` 的房间尺寸但 `level: 0.0`。
 
 ### `overlay-prefs.conf`
@@ -139,7 +143,7 @@ teleport=0.500
 ```text
 .
   play-dovi-atmos-headphones.bat      播放启动脚本
-  omniphony-headphones.config.yaml    耳机渲染配置
+  omniphony-headphones.config.yaml    主渲染配置（默认 7.1.4 扬声器输出）
   overlay-prefs.conf                  mpv 空间对象 overlay 偏好
   releases/                           本地运行包，Git 忽略
   sources/                            上游源码快照，Git 忽略
