@@ -12,7 +12,7 @@
 - 使用 `mpv-omniphony` 的 `--ad=orender` 走空间音频渲染链路。
 - 启动时自动把 `harletty_bridge.dll` 传给 orender。
 - 启用 Omniphony OSC，方便 Omniphony Studio 显示实时对象位置和电平。
-- 默认使用 7.1.4 扬声器模式输出，并启用自动增益；扬声器和耳机模式共用的 Master Gain 设为 `0 dB`。
+- 默认使用 7.1.4 扬声器模式输出，并关闭自动增益；扬声器和耳机模式共用的 Master Gain 设为 `0 dB`。
 - 视频侧使用 `gpu-next` 和 `target-colorspace-hint`，适合现代 HDR /
   Dolby Vision·Atmos 相关播放路径。
 - 支持 Dolby Vision Profile 7.6 FEL（Full Enhancement Layer）片源；当前 `mpv-omniphony-fel-windows-x86_64` 运行包来自上游 FEL beta 构建。
@@ -116,7 +116,7 @@ FEL 支持仍按上游说明视为实验性功能。更完整的技术细节见 
 - `render.current_layout` 定义 7.1.4 风格的扬声器布局：`FL`、`FR`、`C`、`LFE`、`BL`、`BR`、`SL`、`SR`、`TFL`、`TFR`、`TBL`、`TBR`，布局半径 `radius_m: 1.5`。
 - 所有扬声器使用 `coord_mode: cartesian` 和 `delay_ms: 0.0`；除 `LFE` 外都启用 `spatialize: true`，`LFE` 保持 `spatialize: false`。
 - `render.vbap_elevation_resolution: 90`，评估网格为 `62 x 62 x 15`，负向 Z 网格为 `0`。
-- `render.master_gain: 0.0`（`0 dB`），`render.auto_gain: true`。Master Gain 由扬声器和双耳耳机路径共用，因此两种模式的初始 Master Gain 都是 `0 dB`；当前配置文件没有设置单独的 `auto_gain_ceiling_db`。
+- `render.master_gain: 0.0`（`0 dB`），`render.auto_gain: false`。Master Gain 由扬声器和双耳耳机路径共用，因此两种模式的初始 Master Gain 都是 `0 dB`；当前配置文件没有设置单独的 `auto_gain_ceiling_db`。
 - 房间参数为 `room_width_m: 3.0`、`room_front_m: 1.75`、`room_rear_m: 1.75`、`room_height_m: 1.2`、`room_lower_m: 1.2`，中心混合比例 `room_ratio_center_blend: 0.5`。
 - `render.osc: true`、`render.osc_metering: true`，允许 Studio 连接、监控播放并接收电平数据；`meter_rate` 和 `diag_rate` 均为 `10.0`。
 - `render.binaural.output_mode: speaker`，默认通过 7.1.4 VBAP 扬声器路径输出。推荐保持此模式并配合 Dolby Access 使用；如需改用内置双耳耳机渲染，可将其改为 `binaural`，然后重启 mpv。

@@ -103,7 +103,7 @@ render:
   room_ratio_center_blend: 0.5
   osc: true
   osc_metering: true
-  auto_gain: true
+  auto_gain: false
   meter_rate: 10.0
   diag_rate: 10.0
   binaural:
