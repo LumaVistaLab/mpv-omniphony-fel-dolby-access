@@ -157,7 +157,8 @@ $env:MPV_SPATIAL = "D:\my-mpv\mpv.com"
 ## 默认运行参数
 
 ```bat
-mpv --vo=gpu-next --target-colorspace-hint=yes --ad=orender ^
+mpv --vo=gpu-next --gpu-api=d3d11 --hwdec=d3d11va ^
+  --target-colorspace-hint=yes --ad=orender ^
   --ao=wasapi-spatial,wasapi ^
   --input-conf=mpv-input.conf ^
   --script-opts-append=stats-persistent_overlay=yes ^
@@ -169,7 +170,10 @@ mpv --vo=gpu-next --target-colorspace-hint=yes --ad=orender ^
 
 `omniphony-dolby-access.config.yaml` 默认输出 7.1.4 扬声器布局、按名称映射通道、
 Master Gain `0 dB`、关闭自动增益，并启用 OSC metering。耳机模式下的双耳化由
-Windows/Dolby Atmos for Headphones 完成。
+Windows/Dolby Atmos for Headphones 完成。视频默认通过 D3D11VA 零拷贝硬件解码；
+这对高码率 4K 以及 50/60 fps 的 Dolby Vision Profile 7 FEL 片源尤其重要，因为
+基础层和增强层需要同时解码。若显卡或驱动不兼容，可临时设置
+`$env:MPV_HWDEC = "no"` 后再运行启动器，强制回退软件解码。
 
 ## 验证与排错
 
@@ -209,6 +213,13 @@ FEL 构建需要同时包含 mpv `dv-fel` 补丁、带 `dovi_split` 的 FFmpeg�
 `dv-fel` 且 `PL_API_VER >= 367` 的 libplacebo，以及 libdovi。verbose 日志中应能
 看到 `Dolby Vision Profile 7 splitter`、`virtual EL stream` 或 `el_pair`，且不应
 出现 `dovi_split BSF not available`。
+
+### 高码率片源声音正常但画面卡顿
+
+确认通过 `play-dovi-atmos.bat` 启动，而不是绕过启动器直接运行 mpv。verbose 日志
+应针对基础层和增强层各出现一次 `Using hardware decoding (d3d11va)`。如果日志
+显示 `Using software decoding`，请检查显卡驱动及 HEVC Main 10 硬解支持；也可用
+环境变量 `MPV_HWDEC` 临时指定 mpv 支持的其他硬解后端。
 
 ## 许可证
 

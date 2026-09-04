@@ -64,6 +64,8 @@ echo or set MPV_SPATIAL to an existing patched mpv.com/mpv.exe.
 exit /b 1
 
 :mpv_ok
+if not defined MPV_HWDEC set "MPV_HWDEC=d3d11va"
+
 set "BRIDGE="
 for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\harletty_bridge.dll" 2^>nul') do set "BRIDGE=%%F" & goto :found_bridge
 
@@ -107,9 +109,11 @@ echo Using config:
 echo   "%CONFIG%"
 echo Using input config:
 echo   "%INPUT_CONFIG%"
+echo Using hardware decoder:
+echo   "%MPV_HWDEC%"
 echo.
 
-"%MPV%" --vo=gpu-next --target-colorspace-hint=yes --ad=orender --ao=wasapi-spatial,wasapi "--input-conf=%INPUT_CONFIG%" --script-opts-append=stats-persistent_overlay=yes --script-opts-append=stats-redraw_delay=0.25 "--ad-orender-config=%CONFIG%" "--ad-orender-bridge-path=%BRIDGE%" --ad-orender-osc "%MOVIE%"
+"%MPV%" --vo=gpu-next --gpu-api=d3d11 "--hwdec=%MPV_HWDEC%" --target-colorspace-hint=yes --ad=orender --ao=wasapi-spatial,wasapi "--input-conf=%INPUT_CONFIG%" --script-opts-append=stats-persistent_overlay=yes --script-opts-append=stats-redraw_delay=0.25 "--ad-orender-config=%CONFIG%" "--ad-orender-bridge-path=%BRIDGE%" --ad-orender-osc "%MOVIE%"
 set "MPV_EXIT=%ERRORLEVEL%"
 
 if "%MPV_EXIT%"=="0" goto :done

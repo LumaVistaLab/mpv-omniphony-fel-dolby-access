@@ -181,7 +181,8 @@ through `MPV_SPATIAL`.
 ## Default Runtime Options
 
 ```bat
-mpv --vo=gpu-next --target-colorspace-hint=yes --ad=orender ^
+mpv --vo=gpu-next --gpu-api=d3d11 --hwdec=d3d11va ^
+  --target-colorspace-hint=yes --ad=orender ^
   --ao=wasapi-spatial,wasapi ^
   --input-conf=mpv-input.conf ^
   --script-opts-append=stats-persistent_overlay=yes ^
@@ -194,7 +195,11 @@ mpv --vo=gpu-next --target-colorspace-hint=yes --ad=orender ^
 `omniphony-dolby-access.config.yaml` outputs a named 7.1.4 speaker layout by
 default, sets Master Gain to `0 dB`, disables automatic gain, and enables OSC
 metering. In headphone mode, binauralization is performed by Windows/Dolby Atmos
-for Headphones.
+for Headphones. Video uses zero-copy D3D11VA hardware decoding by default. This
+is especially important for high-bitrate 4K and 50/60 fps Dolby Vision Profile
+7 FEL sources, since the base and enhancement layers must be decoded together.
+If a GPU or driver is incompatible, set `$env:MPV_HWDEC = "no"` before running
+the launcher to force software decoding.
 
 ## Verification and Troubleshooting
 
@@ -239,6 +244,14 @@ An FEL build requires mpv's `dv-fel` patch, FFmpeg with the `dovi_split` bitstre
 filter, libplacebo with `dv-fel` support and `PL_API_VER >= 367`, and libdovi.
 Verbose logs should contain `Dolby Vision Profile 7 splitter`, `virtual EL
 stream`, or `el_pair`, and should not contain `dovi_split BSF not available`.
+
+### Audio is smooth but high-bitrate video stutters
+
+Launch playback through `play-dovi-atmos.bat` instead of invoking mpv directly.
+Verbose logs should show `Using hardware decoding (d3d11va)` once for the base
+layer and once for the enhancement layer. If they show `Using software decoding`,
+check the GPU driver and HEVC Main 10 hardware-decoding support. The `MPV_HWDEC`
+environment variable can also select another hardware backend supported by mpv.
 
 ## License
 
