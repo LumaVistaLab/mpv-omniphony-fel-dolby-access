@@ -1,0 +1,42 @@
+From 7675eea8065d8c03ad0464bfdb4e85442d34dbce Mon Sep 17 00:00:00 2001
+From: LumaVistaLab <MSDN-GJB@outlook.com>
+Date: Fri, 4 Sep 2026 15:10:33 +0800
+Subject: [PATCH 23/23] player: make playback statistics a live toggle
+
+---
+ etc/input.conf       | 2 +-
+ player/lua/stats.lua | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/etc/input.conf b/etc/input.conf
+index 9519bdbe03..1e80a1f908 100644
+--- a/etc/input.conf
++++ b/etc/input.conf
+@@ -100,7 +100,7 @@
+ #O no-osd cycle-values osd-level 3 1    # toggle displaying the OSD on user interaction or always
+ #o show-progress                        # show playback progress
+ #P show-progress                        # show playback progress
+-#i script-binding stats/display-stats   # display information and statistics
++#i script-binding stats/display-page-1-toggle # toggle live playback statistics
+ #I script-binding stats/display-stats-toggle # toggle displaying information and statistics
+ #? script-binding stats/display-page-4-toggle # toggle displaying key bindings
+ #` script-binding commands/open         # open the console
+diff --git a/player/lua/stats.lua b/player/lua/stats.lua
+index 6796515f72..33cb973ef7 100644
+--- a/player/lua/stats.lua
++++ b/player/lua/stats.lua
+@@ -27,9 +27,9 @@ local o = {
+     scroll_lines = 1,
+ 
+     duration = 4,
+-    redraw_delay = 1,                -- acts as duration in the toggling case
++    redraw_delay = 0.25,             -- acts as duration in the toggling case
+     ass_formatting = true,
+-    persistent_overlay = false,      -- whether the stats can be overwritten by other output
++    persistent_overlay = true,       -- whether the stats can be overwritten by other output
+     filter_params_max_length = 100,  -- show one filter per line if list exceeds this length
+     file_tag_max_length = 128,       -- only show file tags shorter than this length in bytes
+     file_tag_max_count = 16,         -- only show the first x file tags
+-- 
+2.51.0.windows.1
+

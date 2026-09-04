@@ -2,3 +2,7 @@ releases/
 sources/
 
 dovi-atmos-batch-player.code-workspace
+
+# Local diagnostic/build products; keep the probe source tracked.
+*.obj
+tools/*.exe

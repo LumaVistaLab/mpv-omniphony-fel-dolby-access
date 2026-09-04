@@ -5,6 +5,7 @@ set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "RELEASES=%ROOT%\releases"
 set "CONFIG=%ROOT%\omniphony-headphones.config.yaml"
+set "INPUT_CONFIG=%ROOT%\mpv-input.conf"
 
 if exist "%RELEASES%\" goto :releases_ok
 echo ERROR: releases directory not found:
@@ -18,9 +19,30 @@ echo   "%CONFIG%"
 exit /b 1
 
 :config_ok
+if exist "%INPUT_CONFIG%" goto :input_config_ok
+echo ERROR: mpv input config file not found:
+echo   "%INPUT_CONFIG%"
+exit /b 1
+
+:input_config_ok
 set "MPV="
-for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\mpv.com" 2^>nul') do set "MPV=%%F" & goto :found_mpv
-for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\mpv.exe" 2^>nul') do set "MPV=%%F" & goto :found_mpv
+set "SPATIAL_MPV_DIR=%RELEASES%\mpv-omniphony-fel-windows-x86_64-ispatial"
+if exist "%SPATIAL_MPV_DIR%\mpv.com" (
+    set "MPV=%SPATIAL_MPV_DIR%\mpv.com"
+    goto :found_mpv
+)
+if exist "%SPATIAL_MPV_DIR%\mpv.exe" (
+    set "MPV=%SPATIAL_MPV_DIR%\mpv.exe"
+    goto :found_mpv
+)
+for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\mpv.com" 2^>nul') do (
+    set "MPV=%%F"
+    goto :found_mpv
+)
+for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\mpv.exe" 2^>nul') do (
+    set "MPV=%%F"
+    goto :found_mpv
+)
 
 :found_mpv
 if defined MPV goto :mpv_ok
@@ -70,9 +92,11 @@ echo Using bridge:
 echo   "%BRIDGE%"
 echo Using config:
 echo   "%CONFIG%"
+echo Using input config:
+echo   "%INPUT_CONFIG%"
 echo.
 
-"%MPV%" --vo=gpu-next --target-colorspace-hint=yes --ad=orender "--ad-orender-config=%CONFIG%" "--ad-orender-bridge-path=%BRIDGE%" --ad-orender-osc "%MOVIE%"
+"%MPV%" --vo=gpu-next --target-colorspace-hint=yes --ad=orender --ao=wasapi-spatial,wasapi "--input-conf=%INPUT_CONFIG%" --script-opts-append=stats-persistent_overlay=yes --script-opts-append=stats-redraw_delay=0.25 "--ad-orender-config=%CONFIG%" "--ad-orender-bridge-path=%BRIDGE%" --ad-orender-osc "%MOVIE%"
 set "MPV_EXIT=%ERRORLEVEL%"
 
 if "%MPV_EXIT%"=="0" goto :done

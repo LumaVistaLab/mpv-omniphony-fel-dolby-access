@@ -1,0 +1,846 @@
+From 10ded31c2f3db42f04af430508faf8e487038a68 Mon Sep 17 00:00:00 2001
+From: LumaVistaLab <MSDN-GJB@outlook.com>
+Date: Thu, 3 Sep 2026 02:43:43 +0800
+Subject: [PATCH 22/22] ao/wasapi: add Windows Spatial Sound static-bed output
+
+---
+ audio/out/ao.c                |   4 +
+ audio/out/ao_wasapi_spatial.c | 781 ++++++++++++++++++++++++++++++++++
+ meson.build                   |   6 +
+ 3 files changed, 791 insertions(+)
+ create mode 100644 audio/out/ao_wasapi_spatial.c
+
+diff --git a/audio/out/ao.c b/audio/out/ao.c
+index 1c110064dc..8d747b0be4 100644
+--- a/audio/out/ao.c
++++ b/audio/out/ao.c
+@@ -51,6 +51,7 @@ extern const struct ao_driver audio_out_opensles;
+ extern const struct ao_driver audio_out_null;
+ extern const struct ao_driver audio_out_alsa;
+ extern const struct ao_driver audio_out_wasapi;
++extern const struct ao_driver audio_out_wasapi_spatial;
+ extern const struct ao_driver audio_out_asio;
+ extern const struct ao_driver audio_out_pcm;
+ extern const struct ao_driver audio_out_lavc;
+@@ -84,6 +85,9 @@ static const struct ao_driver * const audio_out_drivers[] = {
+     &audio_out_alsa,
+ #endif
+ #if HAVE_WASAPI
++#if HAVE_WASAPI_SPATIAL
++    &audio_out_wasapi_spatial,
++#endif
+     &audio_out_wasapi,
+ #endif
+ #if HAVE_ASIO
+diff --git a/audio/out/ao_wasapi_spatial.c b/audio/out/ao_wasapi_spatial.c
+new file mode 100644
+index 0000000000..99b329e053
+--- /dev/null
++++ b/audio/out/ao_wasapi_spatial.c
+@@ -0,0 +1,781 @@
++/*
++ * Windows Spatial Sound output for channel beds with elevation speakers.
++ *
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <inttypes.h>
++#include <string.h>
++
++#include <spatialaudioclient.h>
++#include <propvarutil.h>
++
++#include "mpv_talloc.h"
++
++#include "audio/format.h"
++#include "misc/dispatch.h"
++#include "options/m_option.h"
++#include "osdep/threads.h"
++#include "osdep/timer.h"
++
++#include "ao_wasapi.h"
++
++// Some MinGW uuid libraries lag behind spatialaudioclient.h. Keep the two
++// spatial interface IDs local so builds only require the SDK header and ole32.
++static const GUID mp_IID_ISpatialAudioClient =
++    {0xbbf8e066, 0xaaaa, 0x49be, {0x9a, 0x4d, 0xfd, 0x2a, 0x85, 0x8e, 0xa2, 0x7f}};
++static const GUID mp_IID_ISpatialAudioObjectRenderStream =
++    {0xbab5f473, 0xb423, 0x477b, {0x85, 0xf5, 0xb5, 0xa3, 0x32, 0xa0, 0x41, 0x53}};
++
++struct spatial_notify {
++    IMMNotificationClient client; // must be first
++    IMMDeviceEnumerator *enumerator;
++    struct ao *ao;
++    LPWSTR monitored;
++};
++
++struct spatial_state {
++    struct mp_log *log;
++    bool init_ok;
++    bool running;
++    bool com_initialized;
++
++    HANDLE init_done;
++    HANDLE audio_thread;
++    HANDLE buffer_event;
++    HANDLE user_event;
++    struct mp_dispatch_queue *dispatch;
++    bool shutdown;
++
++    LPWSTR device_id;
++    IMMDevice *device;
++    ISpatialAudioClient *client;
++    ISpatialAudioObjectRenderStream *stream;
++    ISpatialAudioObject *objects[MP_NUM_CHANNELS];
++    AudioObjectType object_types[MP_NUM_CHANNELS];
++    AudioObjectType object_mask;
++    WAVEFORMATEX *object_format;
++    UINT32 max_frames;
++    float *interleaved;
++
++    struct spatial_notify change;
++};
++
++static void uninit(struct ao *ao);
++
++static void release_objects(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    for (int n = 0; n < ao->channels.num; n++)
++        SAFE_RELEASE(s->objects[n]);
++}
++
++static bool activate_objects(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    for (int n = 0; n < ao->channels.num; n++) {
++        HRESULT hr = ISpatialAudioObjectRenderStream_ActivateSpatialAudioObject(
++            s->stream, s->object_types[n], &s->objects[n]);
++        if (FAILED(hr)) {
++            MP_ERR(ao, "Could not activate Spatial Sound object %d: %s\n",
++                   n, mp_HRESULT_to_str(hr));
++            release_objects(ao);
++            return false;
++        }
++    }
++    return true;
++}
++
++static AudioObjectType speaker_to_object(int speaker)
++{
++    switch (speaker) {
++    case MP_SPEAKER_ID_FL:  return AudioObjectType_FrontLeft;
++    case MP_SPEAKER_ID_FR:  return AudioObjectType_FrontRight;
++    case MP_SPEAKER_ID_FC:  return AudioObjectType_FrontCenter;
++    case MP_SPEAKER_ID_LFE: return AudioObjectType_LowFrequency;
++    case MP_SPEAKER_ID_SL:  return AudioObjectType_SideLeft;
++    case MP_SPEAKER_ID_SR:  return AudioObjectType_SideRight;
++    case MP_SPEAKER_ID_BL:  return AudioObjectType_BackLeft;
++    case MP_SPEAKER_ID_BR:  return AudioObjectType_BackRight;
++    case MP_SPEAKER_ID_BC:  return AudioObjectType_BackCenter;
++    case MP_SPEAKER_ID_TFL: return AudioObjectType_TopFrontLeft;
++    case MP_SPEAKER_ID_TFR: return AudioObjectType_TopFrontRight;
++    case MP_SPEAKER_ID_TBL: return AudioObjectType_TopBackLeft;
++    case MP_SPEAKER_ID_TBR: return AudioObjectType_TopBackRight;
++    case MP_SPEAKER_ID_BFL: return AudioObjectType_BottomFrontLeft;
++    case MP_SPEAKER_ID_BFR: return AudioObjectType_BottomFrontRight;
++    default:                return AudioObjectType_None;
++    }
++}
++
++static bool map_channel_bed(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    bool has_elevation = false;
++
++    if (mp_chmap_is_unknown(&ao->channels)) {
++        MP_VERBOSE(ao, "Spatial Sound needs named speaker positions; "
++                    "positionless %d-channel input is not accepted.\n",
++                    ao->channels.num);
++        return false;
++    }
++
++    s->object_mask = AudioObjectType_None;
++    for (int n = 0; n < ao->channels.num; n++) {
++        AudioObjectType type = speaker_to_object(ao->channels.speaker[n]);
++        if (type == AudioObjectType_None || (s->object_mask & type)) {
++            MP_VERBOSE(ao, "Channel %d (%s) has no unique Windows static-object mapping.\n",
++                       n, mp_chmap_to_str(&ao->channels));
++            return false;
++        }
++        s->object_types[n] = type;
++        s->object_mask = (AudioObjectType)(s->object_mask | type);
++        has_elevation |= type == AudioObjectType_TopFrontLeft ||
++                         type == AudioObjectType_TopFrontRight ||
++                         type == AudioObjectType_TopBackLeft ||
++                         type == AudioObjectType_TopBackRight ||
++                         type == AudioObjectType_BottomFrontLeft ||
++                         type == AudioObjectType_BottomFrontRight ||
++                         type == AudioObjectType_BottomBackLeft ||
++                         type == AudioObjectType_BottomBackRight;
++    }
++
++    // Ordinary mono/stereo/surround remains on ao_wasapi. This driver exists
++    // to preserve height channels and is intentionally silent during probing
++    // for a flat bed, allowing mpv's normal AO fallback to continue.
++    if (!has_elevation) {
++        MP_VERBOSE(ao, "No elevation channels; leaving this layout to ordinary WASAPI.\n");
++        return false;
++    }
++    return true;
++}
++
++static bool is_float32_mono(const WAVEFORMATEX *format)
++{
++    if (!format || format->nChannels != 1 || format->wBitsPerSample != 32)
++        return false;
++    if (format->wFormatTag == WAVE_FORMAT_IEEE_FLOAT)
++        return true;
++    if (format->wFormatTag != WAVE_FORMAT_EXTENSIBLE ||
++        format->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
++        return false;
++    const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)format;
++    return ext->SubFormat.Data1 == WAVE_FORMAT_IEEE_FLOAT &&
++           ext->SubFormat.Data2 == 0x0000 && ext->SubFormat.Data3 == 0x0010;
++}
++
++static WAVEFORMATEX *choose_object_format(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    IAudioFormatEnumerator *formats = NULL;
++    WAVEFORMATEX *best = NULL;
++    UINT32 count = 0;
++    HRESULT hr = ISpatialAudioClient_GetSupportedAudioObjectFormatEnumerator(
++        s->client, &formats);
++    EXIT_ON_ERROR(hr);
++    hr = IAudioFormatEnumerator_GetCount(formats, &count);
++    EXIT_ON_ERROR(hr);
++
++    for (UINT32 n = 0; n < count; n++) {
++        WAVEFORMATEX *format = NULL;
++        hr = IAudioFormatEnumerator_GetFormat(formats, n, &format);
++        if (FAILED(hr) || !format)
++            continue;
++        MP_VERBOSE(ao, "Spatial object format %u: %lu Hz, %u ch, %u-bit, tag 0x%04x\n",
++                   n, format->nSamplesPerSec, format->nChannels,
++                   format->wBitsPerSample, format->wFormatTag);
++        if (!is_float32_mono(format)) {
++            CoTaskMemFree(format);
++            continue;
++        }
++        if (!best || format->nSamplesPerSec == (DWORD)ao->samplerate ||
++            (format->nSamplesPerSec == 48000 && best->nSamplesPerSec != (DWORD)ao->samplerate))
++        {
++            if (best)
++                CoTaskMemFree(best);
++            best = format;
++            if (format->nSamplesPerSec == (DWORD)ao->samplerate)
++                break;
++        } else {
++            CoTaskMemFree(format);
++        }
++    }
++
++exit_label:
++    SAFE_RELEASE(formats);
++    if (FAILED(hr)) {
++        MP_VERBOSE(ao, "Could not enumerate Spatial Sound object formats: %s\n",
++                   mp_HRESULT_to_str(hr));
++        if (best)
++            CoTaskMemFree(best);
++        return NULL;
++    }
++    return best;
++}
++
++static bool load_device(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    IMMDeviceEnumerator *enumerator = NULL;
++    HRESULT hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL,
++                                  CLSCTX_INPROC_SERVER,
++                                  &IID_IMMDeviceEnumerator,
++                                  (void **)&enumerator);
++    EXIT_ON_ERROR(hr);
++    hr = IMMDeviceEnumerator_GetDevice(enumerator, s->device_id, &s->device);
++    EXIT_ON_ERROR(hr);
++
++exit_label:
++    SAFE_RELEASE(enumerator);
++    if (FAILED(hr))
++        MP_VERBOSE(ao, "Could not open the selected Spatial Sound endpoint: %s\n",
++                   mp_HRESULT_to_str(hr));
++    return SUCCEEDED(hr);
++}
++
++static bool spatial_thread_init(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    HRESULT hr;
++
++    if (!load_device(ao))
++        return false;
++
++    hr = IMMDevice_Activate(s->device, &mp_IID_ISpatialAudioClient,
++                            CLSCTX_INPROC_SERVER, NULL, (void **)&s->client);
++    if (FAILED(hr)) {
++        MP_VERBOSE(ao, "Spatial Sound is not available on the selected endpoint: %s\n",
++                   mp_HRESULT_to_str(hr));
++        return false;
++    }
++
++    AudioObjectType native_mask = AudioObjectType_None;
++    hr = ISpatialAudioClient_GetNativeStaticObjectTypeMask(s->client,
++                                                            &native_mask);
++    EXIT_ON_ERROR(hr);
++    UINT32 max_dynamic = 0;
++    hr = ISpatialAudioClient_GetMaxDynamicObjectCount(s->client, &max_dynamic);
++    EXIT_ON_ERROR(hr);
++    MP_VERBOSE(ao, "Spatial endpoint: static mask 0x%08x, max dynamic objects %u\n",
++               (unsigned)native_mask, max_dynamic);
++
++    if ((native_mask & s->object_mask) != s->object_mask) {
++        MP_VERBOSE(ao, "The active Spatial Sound provider cannot supply this channel bed "
++                    "(required 0x%08x, missing 0x%08x).\n",
++                   (unsigned)s->object_mask,
++                   (unsigned)(s->object_mask & ~native_mask));
++        return false;
++    }
++
++    s->object_format = choose_object_format(ao);
++    if (!s->object_format) {
++        MP_VERBOSE(ao, "No mono float32 Spatial Sound object format is available.\n");
++        return false;
++    }
++    hr = ISpatialAudioClient_IsAudioObjectFormatSupported(s->client,
++                                                           s->object_format);
++    EXIT_ON_ERROR(hr);
++    hr = ISpatialAudioClient_GetMaxFrameCount(s->client, s->object_format,
++                                               &s->max_frames);
++    EXIT_ON_ERROR(hr);
++    if (!s->max_frames || s->max_frames > 65536) {
++        MP_ERR(ao, "Invalid Spatial Sound quantum size: %u frames\n", s->max_frames);
++        return false;
++    }
++
++    SpatialAudioObjectRenderStreamActivationParams params = {
++        .ObjectFormat = s->object_format,
++        .StaticObjectTypeMask = s->object_mask,
++        .MinDynamicObjectCount = 0,
++        .MaxDynamicObjectCount = 0,
++        .Category = AudioCategory_Movie,
++        .EventHandle = s->buffer_event,
++        .NotifyObject = NULL,
++    };
++    PROPVARIANT activation;
++    PropVariantInit(&activation);
++    activation.vt = VT_BLOB;
++    activation.blob.cbSize = sizeof(params);
++    activation.blob.pBlobData = (BYTE *)&params;
++    hr = ISpatialAudioClient_ActivateSpatialAudioStream(
++        s->client, &activation, &mp_IID_ISpatialAudioObjectRenderStream,
++        (void **)&s->stream);
++    EXIT_ON_ERROR(hr);
++
++    if (!activate_objects(ao))
++        return false;
++
++    ao->samplerate = s->object_format->nSamplesPerSec;
++    ao->format = AF_FORMAT_FLOAT;
++    ao->device_buffer = s->max_frames;
++    s->interleaved = talloc_array(s, float,
++                                  (size_t)s->max_frames * ao->channels.num);
++    if (!s->interleaved)
++        return false;
++
++    MP_INFO(ao, "Using Windows Spatial Sound static bed: %s, %d Hz, "
++            "%u-frame quantum\n", mp_chmap_to_str(&ao->channels),
++            ao->samplerate, s->max_frames);
++    return true;
++
++exit_label:
++    MP_VERBOSE(ao, "Could not initialize the Spatial Sound stream: %s\n",
++               mp_HRESULT_to_str(hr));
++    return false;
++}
++
++static void spatial_thread_uninit(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    if (s->stream && s->running)
++        ISpatialAudioObjectRenderStream_Stop(s->stream);
++    s->running = false;
++    if (s->stream)
++        ISpatialAudioObjectRenderStream_Reset(s->stream);
++    release_objects(ao);
++    SAFE_RELEASE(s->stream);
++    if (s->object_format) {
++        CoTaskMemFree(s->object_format);
++        s->object_format = NULL;
++    }
++    SAFE_RELEASE(s->client);
++    SAFE_RELEASE(s->device);
++}
++
++static bool spatial_feed(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    UINT32 dynamic_count = 0;
++    UINT32 frames = 0;
++    HRESULT hr = ISpatialAudioObjectRenderStream_BeginUpdatingAudioObjects(
++        s->stream, &dynamic_count, &frames);
++    if (FAILED(hr))
++        goto fail;
++    bool updating = true;
++
++    if (frames > s->max_frames) {
++        MP_ERR(ao, "Spatial Sound requested %u frames; buffer holds %u\n",
++               frames, s->max_frames);
++        hr = E_UNEXPECTED;
++        goto end_update;
++    }
++
++    int64_t delay_ns = (int64_t)frames * 1000000000LL / ao->samplerate;
++    void *data[] = {s->interleaved};
++    ao_read_data(ao, data, frames, mp_time_ns() + delay_ns,
++                 NULL, true, true);
++
++    for (int channel = 0; channel < ao->channels.num; channel++) {
++        BYTE *object_data = NULL;
++        UINT32 bytes = 0;
++        hr = ISpatialAudioObject_GetBuffer(s->objects[channel],
++                                            &object_data, &bytes);
++        if (FAILED(hr))
++            goto end_update;
++        if (bytes < frames * sizeof(float)) {
++            MP_ERR(ao, "Spatial object %d returned a short buffer (%u bytes)\n",
++                   channel, bytes);
++            hr = E_UNEXPECTED;
++            goto end_update;
++        }
++        float *dst = (float *)object_data;
++        for (UINT32 frame = 0; frame < frames; frame++)
++            dst[frame] = s->interleaved[(size_t)frame * ao->channels.num + channel];
++    }
++
++end_update:;
++    HRESULT end_hr = updating ?
++        ISpatialAudioObjectRenderStream_EndUpdatingAudioObjects(s->stream) : S_OK;
++    if (SUCCEEDED(hr))
++        hr = end_hr;
++    if (FAILED(hr))
++        goto fail;
++    return true;
++
++fail:
++    MP_ERR(ao, "Error feeding Windows Spatial Sound: %s\n",
++           mp_HRESULT_to_str(hr));
++    ao_request_reload(ao);
++    return false;
++}
++
++static void spatial_stop(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    if (!s->stream)
++        return;
++    if (s->running) {
++        HRESULT hr = ISpatialAudioObjectRenderStream_Stop(s->stream);
++        if (FAILED(hr))
++            MP_WARN(ao, "Spatial stream Stop failed: %s\n", mp_HRESULT_to_str(hr));
++        s->running = false;
++    }
++}
++
++static void spatial_start(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    // A failed post-Reset reactivation leaves the bed empty while mpv queues
++    // an AO reload. Do not start that invalid stream in the meantime.
++    if (!s->stream || !s->objects[0] || s->running)
++        return;
++    HRESULT hr = ISpatialAudioObjectRenderStream_Start(s->stream);
++    if (FAILED(hr)) {
++        MP_ERR(ao, "Spatial stream Start failed: %s\n", mp_HRESULT_to_str(hr));
++        ao_request_reload(ao);
++        return;
++    }
++    s->running = true;
++}
++
++static void spatial_reset(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    spatial_stop(ao);
++
++    HRESULT hr = ISpatialAudioObjectRenderStream_Reset(s->stream);
++    if (FAILED(hr)) {
++        MP_ERR(ao, "Spatial stream Reset failed: %s\n", mp_HRESULT_to_str(hr));
++        ao_request_reload(ao);
++        return;
++    }
++
++    // Reset revokes every active ISpatialAudioObject. Release those COM
++    // references and activate a fresh static bed before playback resumes.
++    release_objects(ao);
++    if (!activate_objects(ao))
++        ao_request_reload(ao);
++}
++
++static void dispatch_wakeup(void *ctx)
++{
++    struct ao *ao = ctx;
++    struct spatial_state *s = ao->priv;
++    SetEvent(s->user_event);
++}
++
++static void run_reset(void *ctx)
++{
++    spatial_reset(ctx);
++}
++
++static void run_start(void *ctx)
++{
++    spatial_start(ctx);
++}
++
++static void run_pause(void *ctx)
++{
++    spatial_stop(ctx);
++}
++
++static void run_shutdown(void *ctx)
++{
++    struct ao *ao = ctx;
++    struct spatial_state *s = ao->priv;
++    spatial_stop(ao);
++    s->shutdown = true;
++}
++
++static DWORD WINAPI spatial_audio_thread(void *ctx)
++{
++    struct ao *ao = ctx;
++    struct spatial_state *s = ao->priv;
++    mp_thread_set_name("ao/wasapi-spatial");
++    HRESULT com_hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
++
++    s->init_ok = spatial_thread_init(ao);
++    SetEvent(s->init_done);
++    if (!s->init_ok)
++        goto done;
++
++    while (!s->shutdown) {
++        // Control commands take priority over render quanta. In particular,
++        // a seek must finish Reset and object reactivation before more data is
++        // pulled from mpv's queue.
++        HANDLE events[] = {s->user_event, s->buffer_event};
++        DWORD wait = WaitForMultipleObjects(MP_ARRAY_SIZE(events), events,
++                                            FALSE, INFINITE);
++        if (wait == WAIT_OBJECT_0) {
++            mp_dispatch_queue_process(s->dispatch, 0);
++            continue;
++        }
++        if (wait == WAIT_OBJECT_0 + 1) {
++            if (s->running)
++                spatial_feed(ao);
++            continue;
++        }
++        {
++            MP_ERR(ao, "Unexpected Spatial Sound wait result: %lu\n", wait);
++            ao_request_reload(ao);
++            continue;
++        }
++    }
++
++done:
++    spatial_thread_uninit(ao);
++    if (SUCCEEDED(com_hr))
++        CoUninitialize();
++    return 0;
++}
++
++static HRESULT STDMETHODCALLTYPE notify_query_interface(
++    IMMNotificationClient *self, REFIID iid, void **object)
++{
++    if (IsEqualGUID(&IID_IMMNotificationClient, iid) ||
++        IsEqualGUID(&IID_IUnknown, iid))
++    {
++        *object = self;
++        return S_OK;
++    }
++    *object = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG STDMETHODCALLTYPE notify_add_ref(IMMNotificationClient *self)
++{
++    (void)self;
++    return 1;
++}
++
++static ULONG STDMETHODCALLTYPE notify_release(IMMNotificationClient *self)
++{
++    (void)self;
++    return 1;
++}
++
++static HRESULT STDMETHODCALLTYPE notify_state_changed(
++    IMMNotificationClient *self, LPCWSTR id, DWORD state)
++{
++    struct spatial_notify *change = (struct spatial_notify *)self;
++    if (id && !wcscmp(id, change->monitored) &&
++        (state == DEVICE_STATE_DISABLED || state == DEVICE_STATE_NOTPRESENT ||
++         state == DEVICE_STATE_UNPLUGGED))
++    {
++        MP_VERBOSE(change->ao, "Spatial endpoint state changed; requesting AO reload.\n");
++        ao_request_reload(change->ao);
++    }
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE notify_added(IMMNotificationClient *self,
++                                               LPCWSTR id)
++{
++    (void)self;
++    (void)id;
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE notify_removed(IMMNotificationClient *self,
++                                                 LPCWSTR id)
++{
++    struct spatial_notify *change = (struct spatial_notify *)self;
++    if (id && !wcscmp(id, change->monitored))
++        ao_request_reload(change->ao);
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE notify_default_changed(
++    IMMNotificationClient *self, EDataFlow flow, ERole role, LPCWSTR id)
++{
++    struct spatial_notify *change = (struct spatial_notify *)self;
++    if (flow != eRender || role != eMultimedia)
++        return S_OK;
++    bstr specified = wasapi_get_specified_device_string(change->ao);
++    if (!specified.len && (!id || wcscmp(id, change->monitored))) {
++        MP_VERBOSE(change->ao, "Default multimedia endpoint changed; requesting AO reload.\n");
++        ao_request_reload(change->ao);
++    }
++    return S_OK;
++}
++
++static HRESULT STDMETHODCALLTYPE notify_property_changed(
++    IMMNotificationClient *self, LPCWSTR id, const PROPERTYKEY key)
++{
++    struct spatial_notify *change = (struct spatial_notify *)self;
++    if (id && !wcscmp(id, change->monitored))
++        MP_VERBOSE(change->ao, "Spatial endpoint property changed: %s\n",
++                   mp_PKEY_to_str(&key));
++    return S_OK;
++}
++
++static CONST_VTBL IMMNotificationClientVtbl spatial_notify_vtbl = {
++    .QueryInterface = notify_query_interface,
++    .AddRef = notify_add_ref,
++    .Release = notify_release,
++    .OnDeviceStateChanged = notify_state_changed,
++    .OnDeviceAdded = notify_added,
++    .OnDeviceRemoved = notify_removed,
++    .OnDefaultDeviceChanged = notify_default_changed,
++    .OnPropertyValueChanged = notify_property_changed,
++};
++
++static bool change_init(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    struct spatial_notify *change = &s->change;
++    change->client.lpVtbl = &spatial_notify_vtbl;
++    change->ao = ao;
++    change->monitored = s->device_id;
++    HRESULT hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL,
++                                  CLSCTX_INPROC_SERVER,
++                                  &IID_IMMDeviceEnumerator,
++                                  (void **)&change->enumerator);
++    if (SUCCEEDED(hr))
++        hr = IMMDeviceEnumerator_RegisterEndpointNotificationCallback(
++            change->enumerator, &change->client);
++    if (FAILED(hr)) {
++        MP_WARN(ao, "Could not monitor Spatial Sound endpoint changes: %s\n",
++                mp_HRESULT_to_str(hr));
++        SAFE_RELEASE(change->enumerator);
++        return false;
++    }
++    return true;
++}
++
++static void change_uninit(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    struct spatial_notify *change = &s->change;
++    if (change->enumerator && change->client.lpVtbl)
++        IMMDeviceEnumerator_UnregisterEndpointNotificationCallback(
++            change->enumerator, &change->client);
++    SAFE_RELEASE(change->enumerator);
++}
++
++static int init(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    s->log = ao->log;
++
++    if (ao->init_flags & AO_INIT_EXCLUSIVE) {
++        MP_VERBOSE(ao, "Windows Spatial Sound is a shared-mode API.\n");
++        return -1;
++    }
++    if (!map_channel_bed(ao))
++        return -1;
++
++    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    s->com_initialized = SUCCEEDED(hr);
++    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
++        MP_VERBOSE(ao, "COM initialization failed: %s\n", mp_HRESULT_to_str(hr));
++        return -1;
++    }
++
++    s->device_id = wasapi_find_deviceID(ao);
++    if (!s->device_id)
++        goto fail;
++    change_init(ao);
++
++    s->init_done = CreateEventW(NULL, FALSE, FALSE, NULL);
++    s->buffer_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++    s->user_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++    if (!s->init_done || !s->buffer_event || !s->user_event)
++        goto fail;
++
++    s->dispatch = mp_dispatch_create(s);
++    mp_dispatch_set_wakeup_fn(s->dispatch, dispatch_wakeup, ao);
++
++    s->audio_thread = CreateThread(NULL, 0, spatial_audio_thread, ao, 0, NULL);
++    if (!s->audio_thread)
++        goto fail;
++    WaitForSingleObject(s->init_done, INFINITE);
++    SAFE_DESTROY(s->init_done, CloseHandle(s->init_done));
++    if (!s->init_ok)
++        goto fail;
++    return 0;
++
++fail:
++    if (!ao->probing)
++        MP_ERR(ao, "Failed to initialize Windows Spatial Sound; ordinary WASAPI is available as fallback.\n");
++    uninit(ao);
++    return -1;
++}
++
++static void uninit(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    if (s->audio_thread) {
++        if (s->init_ok)
++            mp_dispatch_run(s->dispatch, run_shutdown, ao);
++        WaitForSingleObject(s->audio_thread, INFINITE);
++    }
++    SAFE_DESTROY(s->init_done, CloseHandle(s->init_done));
++    SAFE_DESTROY(s->audio_thread, CloseHandle(s->audio_thread));
++    SAFE_DESTROY(s->buffer_event, CloseHandle(s->buffer_event));
++    SAFE_DESTROY(s->user_event, CloseHandle(s->user_event));
++    change_uninit(ao);
++    talloc_free(s->device_id);
++    s->device_id = NULL;
++    if (s->com_initialized)
++        CoUninitialize();
++}
++
++static void reset(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    mp_dispatch_run(s->dispatch, run_reset, ao);
++}
++
++static void start(struct ao *ao)
++{
++    struct spatial_state *s = ao->priv;
++    mp_dispatch_run(s->dispatch, run_start, ao);
++}
++
++static bool set_pause(struct ao *ao, bool paused)
++{
++    struct spatial_state *s = ao->priv;
++    mp_dispatch_run(s->dispatch, paused ? run_pause : run_start, ao);
++    return true;
++}
++
++static int control(struct ao *ao, enum aocontrol cmd, void *arg)
++{
++    (void)ao;
++    (void)arg;
++    switch (cmd) {
++    case AOCONTROL_GET_VOLUME:
++    case AOCONTROL_SET_VOLUME:
++    case AOCONTROL_GET_MUTE:
++    case AOCONTROL_SET_MUTE:
++        // Spatial streams expose no session volume service. mpv's software
++        // gain is applied by ao_read_data(), before deinterleaving the bed.
++        return CONTROL_FALSE;
++    case AOCONTROL_UPDATE_STREAM_TITLE:
++        return CONTROL_FALSE;
++    }
++    return CONTROL_UNKNOWN;
++}
++
++static void spatial_list_devs(struct ao *ao, struct ao_device_list *list)
++{
++    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    bool uninitialize = SUCCEEDED(hr);
++    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
++        MP_VERBOSE(ao, "COM initialization failed while listing devices: %s\n",
++                   mp_HRESULT_to_str(hr));
++        return;
++    }
++    wasapi_list_devs(ao, list);
++    if (uninitialize)
++        CoUninitialize();
++}
++
++const struct ao_driver audio_out_wasapi_spatial = {
++    .description    = "Windows Spatial Sound static channel-bed output",
++    .name           = "wasapi-spatial",
++    .init           = init,
++    .uninit         = uninit,
++    .control        = control,
++    .reset          = reset,
++    .start          = start,
++    .set_pause      = set_pause,
++    .list_devs      = spatial_list_devs,
++    .priv_size      = sizeof(struct spatial_state),
++};
+diff --git a/meson.build b/meson.build
+index 53cd714aa9..57c396de14 100644
+--- a/meson.build
++++ b/meson.build
+@@ -954,11 +954,17 @@ endif
+ wasapi = cc.has_header_symbol('audioclient.h', 'IAudioClient', required:
+     get_option('wasapi').require(win32))
+ features += {'wasapi': wasapi}
++wasapi_spatial = wasapi and features['win32-desktop'] and cc.has_header_symbol(
++    'spatialaudioclient.h', 'ISpatialAudioClient')
++features += {'wasapi-spatial': wasapi_spatial}
+ if features['wasapi']
+     sources += files('audio/out/ao_wasapi.c',
+                      'audio/out/ao_wasapi_changenotify.c',
+                      'audio/out/ao_wasapi_utils.c')
+ endif
++if features['wasapi-spatial']
++    sources += files('audio/out/ao_wasapi_spatial.c')
++endif
+ 
+ asio = cc.has_header('objbase.h', required:
+     get_option('asio').require(win32))
+-- 
+2.51.0.windows.1
+

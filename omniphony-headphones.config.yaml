@@ -2,6 +2,9 @@
 # Master gain is shared by the speaker and binaural paths and is set to 0 dB.
 # The playback script passes the detected bridge path at launch time.
 render:
+  # Windows Spatial Sound routes static objects by speaker identity, not by
+  # renderer output index. This keeps all four height channels identifiable.
+  output_channel_mapping: by_name
   current_layout:
     radius_m: 1.5
     speakers:
