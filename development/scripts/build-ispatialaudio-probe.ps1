@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../.."))
 $source = Join-Path $repositoryRoot "development/tools/ispatialaudio-probe.c"
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $repositoryRoot "dist/tools"
+    $OutputDirectory = Join-Path $repositoryRoot "distribution/tools"
 }
 $outputPath = [IO.Path]::GetFullPath($OutputDirectory)
 

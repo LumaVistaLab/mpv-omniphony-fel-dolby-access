@@ -4,8 +4,8 @@ setlocal EnableExtensions DisableDelayedExpansion
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "RELEASES=%ROOT%\releases"
-set "DIST=%ROOT%\dist"
-set "CONFIG=%ROOT%\omniphony-headphones.config.yaml"
+set "DISTRIBUTION=%ROOT%\distribution"
+set "CONFIG=%ROOT%\omniphony-dolby-access.config.yaml"
 set "INPUT_CONFIG=%ROOT%\mpv-input.conf"
 
 if exist "%RELEASES%\" goto :releases_ok
@@ -37,7 +37,7 @@ echo   "%MPV_SPATIAL%"
 exit /b 1
 
 :find_default_mpv
-set "SPATIAL_MPV_DIR=%DIST%\mpv-omniphony-fel-windows-x86_64-ispatial"
+set "SPATIAL_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ispatial"
 if exist "%SPATIAL_MPV_DIR%\mpv.com" (
     set "MPV=%SPATIAL_MPV_DIR%\mpv.com"
     goto :found_mpv
@@ -46,11 +46,11 @@ if exist "%SPATIAL_MPV_DIR%\mpv.exe" (
     set "MPV=%SPATIAL_MPV_DIR%\mpv.exe"
     goto :found_mpv
 )
-for /f "delims=" %%F in ('dir /b /s /a:-d "%DIST%\mpv.com" 2^>nul') do (
+for /f "delims=" %%F in ('dir /b /s /a:-d "%DISTRIBUTION%\mpv.com" 2^>nul') do (
     set "MPV=%%F"
     goto :found_mpv
 )
-for /f "delims=" %%F in ('dir /b /s /a:-d "%DIST%\mpv.exe" 2^>nul') do (
+for /f "delims=" %%F in ('dir /b /s /a:-d "%DISTRIBUTION%\mpv.exe" 2^>nul') do (
     set "MPV=%%F"
     goto :found_mpv
 )
@@ -58,7 +58,7 @@ for /f "delims=" %%F in ('dir /b /s /a:-d "%DIST%\mpv.exe" 2^>nul') do (
 :found_mpv
 if defined MPV goto :mpv_ok
 echo ERROR: a locally built Spatial mpv was not found under:
-echo   "%DIST%"
+echo   "%DISTRIBUTION%"
 echo Build it with development\scripts\build-mpv-windows.ps1,
 echo or set MPV_SPATIAL to an existing patched mpv.com/mpv.exe.
 exit /b 1
@@ -75,7 +75,7 @@ exit /b 1
 
 :bridge_ok
 echo.
-echo Start Omniphony Studio first. Keep it open, then enter the movie path below.
+echo Omniphony Studio is optional; start it only for visualization or live control.
 echo You can drag and drop the movie file into this window, then press Enter.
 echo.
 

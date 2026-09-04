@@ -17,7 +17,7 @@ if (-not $IntegrationSource) {
     $IntegrationSource = Join-Path $repositoryRoot "sources/mpv-omniphony-0.4.1-fel-beta.4"
 }
 if (-not $Destination) {
-    $Destination = Join-Path $repositoryRoot "build/mpv-ispatial"
+    $Destination = Join-Path $repositoryRoot "build_temp/mpv-ispatial"
 }
 
 function Get-FullPath([string]$Path) {

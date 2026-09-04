@@ -53,14 +53,14 @@ $pkgConfigPath = Get-FullPath $PkgConfig
 $runtimePath = Get-FullPath $RuntimeBase
 
 if (-not $BuildDirectory) {
-    $BuildDirectory = Join-Path $repositoryRoot "build/mpv-windows-ucrt"
+    $BuildDirectory = Join-Path $repositoryRoot "build_temp/mpv-windows-ucrt"
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $repositoryRoot "dist/mpv-omniphony-fel-windows-x86_64-ispatial"
+    $OutputDirectory = Join-Path $repositoryRoot "distribution/mpv-omniphony-fel-windows-x86_64-ispatial"
 }
 $buildPath = Get-FullPath $BuildDirectory
 $outputPath = Get-FullPath $OutputDirectory
-$nativeFile = Join-Path $repositoryRoot "build/mpv-ucrt-native.ini"
+$nativeFile = Join-Path $repositoryRoot "build_temp/mpv-ucrt-native.ini"
 
 Require-Path $sourcePath "Prepared mpv source" "Container"
 Require-Path (Join-Path $sourcePath "meson.build") "mpv meson.build" "Leaf"
@@ -144,7 +144,11 @@ Require-Path $builtExe "Built mpv.exe" "Leaf"
 Require-Path $builtCom "Built mpv.com" "Leaf"
 
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
-Copy-Item -Path (Join-Path $runtimePath "*") -Destination $outputPath -Recurse -Force
+Get-ChildItem -LiteralPath $runtimePath -Force |
+    Where-Object { $_.Name -notlike "README*" } |
+    ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $outputPath -Recurse -Force
+    }
 Copy-Item -LiteralPath $builtExe -Destination (Join-Path $outputPath "mpv.exe") -Force
 Copy-Item -LiteralPath $builtCom -Destination (Join-Path $outputPath "mpv.com") -Force
 
