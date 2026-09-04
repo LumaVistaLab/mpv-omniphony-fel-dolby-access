@@ -4,6 +4,7 @@ setlocal EnableExtensions DisableDelayedExpansion
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "RELEASES=%ROOT%\releases"
+set "DIST=%ROOT%\dist"
 set "CONFIG=%ROOT%\omniphony-headphones.config.yaml"
 set "INPUT_CONFIG=%ROOT%\mpv-input.conf"
 
@@ -26,7 +27,17 @@ exit /b 1
 
 :input_config_ok
 set "MPV="
-set "SPATIAL_MPV_DIR=%RELEASES%\mpv-omniphony-fel-windows-x86_64-ispatial"
+if not defined MPV_SPATIAL goto :find_default_mpv
+if exist "%MPV_SPATIAL%" (
+    set "MPV=%MPV_SPATIAL%"
+    goto :found_mpv
+)
+echo ERROR: MPV_SPATIAL points to a missing file:
+echo   "%MPV_SPATIAL%"
+exit /b 1
+
+:find_default_mpv
+set "SPATIAL_MPV_DIR=%DIST%\mpv-omniphony-fel-windows-x86_64-ispatial"
 if exist "%SPATIAL_MPV_DIR%\mpv.com" (
     set "MPV=%SPATIAL_MPV_DIR%\mpv.com"
     goto :found_mpv
@@ -35,19 +46,21 @@ if exist "%SPATIAL_MPV_DIR%\mpv.exe" (
     set "MPV=%SPATIAL_MPV_DIR%\mpv.exe"
     goto :found_mpv
 )
-for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\mpv.com" 2^>nul') do (
+for /f "delims=" %%F in ('dir /b /s /a:-d "%DIST%\mpv.com" 2^>nul') do (
     set "MPV=%%F"
     goto :found_mpv
 )
-for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\mpv.exe" 2^>nul') do (
+for /f "delims=" %%F in ('dir /b /s /a:-d "%DIST%\mpv.exe" 2^>nul') do (
     set "MPV=%%F"
     goto :found_mpv
 )
 
 :found_mpv
 if defined MPV goto :mpv_ok
-echo ERROR: mpv.com or mpv.exe was not found under:
-echo   "%RELEASES%"
+echo ERROR: a locally built Spatial mpv was not found under:
+echo   "%DIST%"
+echo Build it with development\scripts\build-mpv-windows.ps1,
+echo or set MPV_SPATIAL to an existing patched mpv.com/mpv.exe.
 exit /b 1
 
 :mpv_ok

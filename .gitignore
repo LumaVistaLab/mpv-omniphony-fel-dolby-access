@@ -1,8 +1,14 @@
+build/
+dist/
 releases/
 sources/
 
 dovi-atmos-batch-player.code-workspace
 
-# Local diagnostic/build products; keep the probe source tracked.
+# Compiled products. Source, patches, configuration, and build scripts stay tracked.
+*.com
+*.dll
+*.exe
+*.lib
 *.obj
-tools/*.exe
+*.pdb
