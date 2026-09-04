@@ -1,95 +1,112 @@
 # mpv-omniphony-fel for Dolby Access
 
-面向 Windows 的 mpv/Omniphony 播放辅助项目。本项目在 Omniphony/FEL
-链路上增加 `ISpatialAudioClient` 输出，使带名称的 7.1.4 PCM 静态床交给 Windows
-Spatial Sound provider 渲染，并修复了 seek 后空间流重建、右键菜单运行时依赖和
-Playback statistics 持久实时刷新问题。
+Language: English | [简体中文](README_zh-CN.md)
 
-音频设备不写死，始终使用 Windows 当前的默认多媒体输出端点。当前以 Dolby
-Atmos for Headphones 为基准；切换到支持的 HDMI 默认端点并启用 Dolby Atmos
-for Home Theater 后，同一后端会按新端点重新创建空间流。
+A Windows playback helper project for mpv/Omniphony. It adds an
+`ISpatialAudioClient` output to the Omniphony/FEL pipeline so that a named 7.1.4
+PCM static bed can be rendered by the active Windows Spatial Sound provider. It
+also fixes Spatial Sound stream reconstruction after seeking, runtime
+dependencies for the context menu, and persistent live refresh for Playback
+statistics.
 
-## 音频链路
+The audio device is not hardcoded; playback always uses the current Windows
+default multimedia output endpoint. Dolby Atmos for Headphones is the reference
+configuration. If a compatible HDMI endpoint becomes the default and Dolby
+Atmos for Home Theater is enabled, the same backend recreates the spatial stream
+for the new endpoint.
+
+## Audio Path
 
 ```text
-Atmos 音轨 -> orender -> 带名称的 7.1.4 float PCM
-           -> wasapi-spatial -> 12 个 Windows 静态音频对象
-           -> 当前 Spatial Sound provider -> 默认耳机或家庭影院端点
+Atmos track -> orender -> named 7.1.4 float PCM
+             -> wasapi-spatial -> 12 Windows static audio objects
+             -> active Spatial Sound provider -> default headphone or home theater endpoint
 ```
 
-这里不是把原始 Atmos bitstream 或动态对象元数据直接传给 Dolby Access。
-orender 先生成 7.1.4 静态床，`wasapi-spatial` 再保留每个扬声器的位置语义提交给
-Windows。普通 WASAPI 共享模式通常只能协商到平面 7.1，因此启动参数使用
-`--ao=wasapi-spatial,wasapi`：7.1.4 优先走 Spatial Sound，初始化失败时才回退。
+This does not pass the original Atmos bitstream or dynamic-object metadata
+directly to Dolby Access. `orender` first produces a 7.1.4 static bed, and
+`wasapi-spatial` submits it to Windows while preserving the positional identity
+of each speaker. Ordinary shared-mode WASAPI usually negotiates only a flat 7.1
+layout, so the launcher uses `--ao=wasapi-spatial,wasapi`: Spatial Sound receives
+7.1.4 when available, with ordinary WASAPI as the initialization fallback.
 
-## 目录结构
+## Repository Layout
 
 ```text
 mpv-omniphony-fel-dolby-access/
-├── development/                              # 补丁、工具源码与构建脚本
-│   ├── mpv/                                  # mpv 补丁
-│   ├── scripts/                              # 源码准备与 Windows 构建脚本
+├── README.md                                 # English documentation
+├── README_zh-CN.md                           # Simplified Chinese documentation
+├── development/                              # Patches, tool sources, and build scripts
+│   ├── mpv/                                  # mpv patches
+│   ├── scripts/                              # Source preparation and Windows build scripts
 │   └── tools/
-│       └── ispatialaudio-probe.c             # Spatial API 独立探针源码
-├── mpv-input.conf                            # 实时统计按键绑定
-├── omniphony-dolby-access.config.yaml        # 7.1.4 渲染配置
-├── overlay-prefs.conf                        # 空间对象 overlay 偏好
-├── play-dovi-atmos.bat                       # 播放入口
-├── sources/                                  # 未修改的上游源码（Git 忽略）
-├── releases/                                 # 未修改的上游发布包（Git 忽略）
-├── build_temp/                               # 补丁工作树与中间产物（Git 忽略）
-└── distribution/                             # 本地编译的成品运行包（Git 忽略）
+│       └── ispatialaudio-probe.c             # Standalone Spatial API probe source
+├── mpv-input.conf                            # Live statistics key bindings
+├── omniphony-dolby-access.config.yaml        # 7.1.4 render configuration
+├── overlay-prefs.conf                        # Spatial-object overlay preferences
+├── play-dovi-atmos.bat                       # Playback launcher
+├── sources/                                  # Unmodified upstream sources (ignored)
+├── releases/                                 # Unmodified upstream packages (ignored)
+├── build_temp/                               # Patched trees and intermediates (ignored)
+└── distribution/                             # Locally built runnable packages (ignored)
 ```
 
-Git 跟踪补丁、工具源码、配置和构建脚本；`sources/` 与 `releases/` 仅保存未经
-修改的上游材料，`build_temp/` 与 `distribution/` 仅保存本地生成内容。这四个
-目录以及个人编辑器工作区均由 `.gitignore` 排除。
+Git tracks the patches, tool sources, configuration, and build scripts.
+`sources/` and `releases/` contain only unmodified upstream material, while
+`build_temp/` and `distribution/` contain only locally generated files. These
+four directories and the personal editor workspace are excluded by
+`.gitignore`.
 
-## 获取原始材料
+## Obtain Upstream Material
 
-用户可自行下载并按下面的建议目录解压。目录名可通过构建脚本参数覆盖。
+Download and extract the required material into the suggested directories
+below. Directory names can be overridden through build-script parameters.
 
-### 原始发布包：`releases/`
+### Upstream release packages: `releases/`
 
 - [mpv-omniphony FEL Windows x86_64](https://github.com/mgth/mpv-omniphony/releases/download/v0.4.1-fel-beta.4/mpv-omniphony-fel-windows-x86_64.zip)
 - [harletty-bridge v0.7.1 Windows x86_64](https://github.com/harletty/harletty-bridge/releases/download/v0.7.1/harletty-bridge-v0.7.1-windows-x86_64.zip)
-- [Omniphony Studio 0.4.1 Windows x64](https://github.com/mgth/Omniphony/releases/download/v0.4.1/Omniphony.Studio_0.4.1_x64-setup.exe)（可选，仅用于 3D 可视化、监看和实时控制）
+- [Omniphony Studio 0.4.1 Windows x64](https://github.com/mgth/Omniphony/releases/download/v0.4.1/Omniphony.Studio_0.4.1_x64-setup.exe) (optional; 3D visualization, monitoring, and live control only)
 
-建议布局：
+Suggested layout:
 
 ```text
 releases/
-  mpv-omniphony-fel-windows-x86_64/   原始基础运行包
+  mpv-omniphony-fel-windows-x86_64/   original runtime base
   harletty-bridge-v0.7.1-windows-x86_64/
     harletty_bridge.dll
-  Omniphony.Studio_0.4.1_x64-setup.exe  可选
+  Omniphony.Studio_0.4.1_x64-setup.exe  optional
 ```
 
-### 原始源码：`sources/`
+### Upstream sources: `sources/`
 
-- [mpv Git 仓库](https://github.com/mpv-player/mpv)
-- [mpv-omniphony v0.4.1-fel-beta.4 源码](https://github.com/mgth/mpv-omniphony/archive/refs/tags/v0.4.1-fel-beta.4.zip)
-- [Omniphony v0.4.1 源码](https://github.com/mgth/Omniphony/archive/refs/tags/v0.4.1.zip)
-- [harletty-bridge v0.7.1 源码](https://github.com/harletty/harletty-bridge/archive/refs/tags/v0.7.1.zip)
+- [mpv Git repository](https://github.com/mpv-player/mpv)
+- [mpv-omniphony v0.4.1-fel-beta.4 source](https://github.com/mgth/mpv-omniphony/archive/refs/tags/v0.4.1-fel-beta.4.zip)
+- [Omniphony v0.4.1 source](https://github.com/mgth/Omniphony/archive/refs/tags/v0.4.1.zip)
+- [harletty-bridge v0.7.1 source](https://github.com/harletty/harletty-bridge/archive/refs/tags/v0.7.1.zip)
 
-构建脚本默认从 `sources/mpv/` 读取完整的 mpv Git clone，并从
-`sources/mpv-omniphony-0.4.1-fel-beta.4/` 读取 Omniphony 集成源码。当前补丁集以
-mpv 提交 `70894ae0390cf20edac0e68de72ab26725520416` 为可复现基线；不能使用缺少
-Git 对象的源码压缩包替代 mpv clone。
+By default, the build scripts read a complete mpv Git clone from `sources/mpv/`
+and the Omniphony integration source from
+`sources/mpv-omniphony-0.4.1-fel-beta.4/`. The reproducible baseline for the
+current patch set is mpv commit
+`70894ae0390cf20edac0e68de72ab26725520416`; a source archive without the
+required Git objects cannot replace the mpv clone.
 
-## 编译
+## Build
 
-先生成一个位于 `build_temp/`、不会污染原始源码的工作树：
+First create a patched working tree under `build_temp/` without modifying the
+upstream source directories:
 
 ```powershell
 .\development\scripts\prepare-mpv-source.ps1
 ```
 
-脚本依次应用 mpv-omniphony 的 `patches-master`、`patches-fel`，再应用
-`development/mpv/` 中的 `0022` 和 `0023`，默认输出到
-`build_temp/mpv-ispatial/`，不会修改 `sources/`。
+The script applies mpv-omniphony's `patches-master` and `patches-fel`, followed
+by local patches `0022` and `0023` from `development/mpv/`. Its default output is
+`build_temp/mpv-ispatial/`, and it does not modify `sources/`.
 
-准备好 UCRT LLVM-MinGW、Meson、Ninja、pkg-config 和 FEL/mpv 依赖前缀后构建：
+After preparing UCRT LLVM-MinGW, Meson, Ninja, pkg-config, and an FEL/mpv
+dependency prefix, run:
 
 ```powershell
 .\development\scripts\build-mpv-windows.ps1 `
@@ -100,57 +117,68 @@ Git 对象的源码压缩包替代 mpv clone。
   -RuntimeBase .\releases\mpv-omniphony-fel-windows-x86_64
 ```
 
-成品默认生成到：
+The runnable package is generated at:
 
 ```text
 distribution/mpv-omniphony-fel-windows-x86_64-ispatial/
 ```
 
-构建必须启用 Lua 5.2，并使用与基础运行包 DLL 一致的 UCRT ABI，否则 mpv 内置
-右键菜单脚本可能无法加载，或出现 DLL 运行库混用问题。构建脚本会复制基础运行
-包的 DLL（跳过其 README），再替换新编译的 `mpv.exe` 与 `mpv.com`；若目标目录
-已经存在，脚本会停止，避免静默覆盖。
+The build must enable Lua 5.2 and use the same UCRT ABI as the runtime-base
+DLLs. Otherwise, mpv's built-in context-menu scripts may fail to load, or DLLs
+from incompatible runtime families may be mixed. The build script copies the
+runtime-base DLLs (excluding its README), then replaces `mpv.exe` and `mpv.com`
+with the newly built files. It stops if the output directory already exists to
+avoid silently overwriting a previous package.
 
-### Spatial API 探针
+### Spatial API probe
 
-若 `clang` 已在 `PATH` 中，可单独编译默认音频端点探针：
+If `clang` is available in `PATH`, build the standalone default-endpoint probe
+with:
 
 ```powershell
 .\development\scripts\build-ispatialaudio-probe.ps1
 ```
 
-也可通过 `-ToolchainBin D:\llvm-mingw-ucrt\bin` 指定 LLVM-MinGW。成品默认生成到
-`distribution/tools/ispatialaudio-probe.exe`。
+Alternatively, select LLVM-MinGW with
+`-ToolchainBin D:\llvm-mingw-ucrt\bin`. The default output is
+`distribution/tools/ispatialaudio-probe.exe`.
 
-## 播放
+## Playback
 
-1. 在当前默认 Windows 音频设备上启用对应的 Dolby Atmos 空间音效模式。
-2. 确认本地构建位于 `distribution/mpv-omniphony-fel-windows-x86_64-ispatial/`，并且
-   `releases/` 中有原始 `harletty_bridge.dll`。
-3. 双击 `play-dovi-atmos.bat`，拖入影片并按 Enter。
+1. Enable the appropriate Dolby Atmos spatial-sound mode on the current default
+   Windows audio device.
+2. Confirm that the local build is under
+   `distribution/mpv-omniphony-fel-windows-x86_64-ispatial/` and that an
+   unmodified `harletty_bridge.dll` is present under `releases/`.
+3. Double-click `play-dovi-atmos.bat`, drop a movie onto the window, and press
+   Enter.
 
-Omniphony Studio 不是播放依赖，无需安装或预先启动。mpv 运行包自带
-`orender.dll`，`--ad=orender` 会在 mpv 进程内创建渲染器。只有需要 3D 对象
-可视化、电平监看或实时调参时，才需另行安装并启动 Studio；它会通过 OSC 连接
-内嵌渲染器。没有 Studio 连接时，启用 OSC 也不影响解码和音频输出。
+Omniphony Studio is not a playback dependency and does not need to be installed
+or started first. The mpv runtime package includes `orender.dll`, and
+`--ad=orender` creates the renderer inside the mpv process. Install and run
+Studio only when 3D object visualization, level monitoring, or live parameter
+control is required; it connects to the embedded renderer over OSC. Enabling
+OSC without a Studio connection does not affect decoding or audio output.
 
-也可以直接传入路径：
+A path can also be passed directly:
 
 ```powershell
 .\play-dovi-atmos.bat "D:\Movies\Example.mkv"
 ```
 
-若成品在其他位置，可临时指定已打本项目补丁的 mpv：
+If the runnable package is elsewhere, temporarily select a patched mpv build:
 
 ```powershell
 $env:MPV_SPATIAL = "D:\my-mpv\mpv.com"
 .\play-dovi-atmos.bat "D:\Movies\Example.mkv"
 ```
 
-启动器不会从 `releases/` 中任意挑选 mpv，以免误用没有 `wasapi-spatial` 的原始
-发布版。它只使用 `distribution/` 中的本地成品或显式设置的 `MPV_SPATIAL`。
+The launcher does not select arbitrary mpv binaries from `releases/`, which
+prevents accidentally using an upstream release without `wasapi-spatial`. It
+uses only a local package under `distribution/` or the path explicitly supplied
+through `MPV_SPATIAL`.
 
-## 默认运行参数
+## Default Runtime Options
 
 ```bat
 mpv --vo=gpu-next --target-colorspace-hint=yes --ad=orender ^
@@ -163,50 +191,58 @@ mpv --vo=gpu-next --target-colorspace-hint=yes --ad=orender ^
   --ad-orender-osc "movie.mkv"
 ```
 
-`omniphony-dolby-access.config.yaml` 默认输出 7.1.4 扬声器布局、按名称映射通道、
-Master Gain `0 dB`、关闭自动增益，并启用 OSC metering。耳机模式下的双耳化由
-Windows/Dolby Atmos for Headphones 完成。
+`omniphony-dolby-access.config.yaml` outputs a named 7.1.4 speaker layout by
+default, sets Master Gain to `0 dB`, disables automatic gain, and enables OSC
+metering. In headphone mode, binauralization is performed by Windows/Dolby Atmos
+for Headphones.
 
-## 验证与排错
+## Verification and Troubleshooting
 
-### 确认 7.1.4 没有降级
+### Confirm that 7.1.4 has not fallen back
 
-使用 verbose 日志播放时应同时看到：
+Verbose playback logs should contain both of the following lines:
 
 ```text
 Using Windows Spatial Sound static bed: fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr
 AO: [wasapi-spatial] 48000Hz ... 12ch float
 ```
 
-如果看到 `AO: [wasapi]`，说明已经回退。检查默认多媒体端点、Dolby Access 模式
-以及日志中的 `required` / `missing` 静态对象掩码。可编译并运行
-`development/tools/ispatialaudio-probe.c` 单独验证当前默认端点。
+If `AO: [wasapi]` appears instead, the spatial backend has fallen back. Check the
+default multimedia endpoint, the Dolby Access mode, and the `required` and
+`missing` static-object masks in the log. The probe source at
+`development/tools/ispatialaudio-probe.c` can be built and run to verify the
+current default endpoint independently.
 
-### 右键菜单不可用
+### Context menu unavailable
 
-右键菜单依赖 mpv 内置 `select.lua` / `context_menu.lua`。确认运行的是启用
-Lua 5.2 的 UCRT `distribution/` 成品。
+The context menu depends on mpv's built-in `select.lua` and `context_menu.lua`.
+Confirm that the UCRT package under `distribution/` was built with Lua 5.2
+enabled.
 
-### 快进或快退后卡死、闪退
+### Freeze or crash after seeking
 
-`ISpatialAudioClient::Reset()` 会撤销现有静态对象。`0022` 补丁会让音频线程在
-seek 时同步停止、Reset、释放旧对象，并重建完整 7.1.4 对象集后继续送帧。若
-替换了 `mpv.exe`，请确认仍应用了最新 `0022`。
+`ISpatialAudioClient::Reset()` revokes existing static objects. Patch `0022`
+makes the audio thread stop and reset synchronously on seek, release the old
+objects, and rebuild the complete 7.1.4 object set before feeding more frames.
+If `mpv.exe` has been replaced, confirm that the latest `0022` is still applied.
 
-### Playback statistics 不持久或不刷新
+### Playback statistics do not persist or refresh
 
-`mpv-input.conf` 把 `i` / `I` 绑定为 `stats/display-page-1-toggle`；启动器同时设置
-持久 overlay 与 `0.25 s` 重绘周期。若绕过启动器，请自行加载输入配置和这两个
-stats 参数，并确认构建包含 `0023`。
+`mpv-input.conf` binds `i` and `I` to `stats/display-page-1-toggle`. The launcher
+also enables the persistent overlay and a `0.25 s` redraw interval. If the
+launcher is bypassed, load the input configuration and these two stats options
+manually, and confirm that the build includes `0023`.
 
 ### Dolby Vision Profile 7 FEL
 
-FEL 构建需要同时包含 mpv `dv-fel` 补丁、带 `dovi_split` 的 FFmpeg、支持
-`dv-fel` 且 `PL_API_VER >= 367` 的 libplacebo，以及 libdovi。verbose 日志中应能
-看到 `Dolby Vision Profile 7 splitter`、`virtual EL stream` 或 `el_pair`，且不应
-出现 `dovi_split BSF not available`。
+An FEL build requires mpv's `dv-fel` patch, FFmpeg with the `dovi_split` bitstream
+filter, libplacebo with `dv-fel` support and `PL_API_VER >= 367`, and libdovi.
+Verbose logs should contain `Dolby Vision Profile 7 splitter`, `virtual EL
+stream`, or `el_pair`, and should not contain `dovi_split BSF not available`.
 
-## 许可证
+## License
 
-仓库根目录使用 GPL-3.0。`sources/` 和 `releases/` 中的用户下载材料保留各自上游
-许可证；重新分发本地 `distribution/` 成品前，请同时检查所有所链接组件的许可要求。
+The repository root is licensed under GPL-3.0. Material downloaded by the user
+under `sources/` and `releases/` retains its respective upstream license. Before
+redistributing a local package from `distribution/`, also review the licenses of
+all linked components.
