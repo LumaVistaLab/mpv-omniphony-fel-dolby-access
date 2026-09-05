@@ -1,4 +1,4 @@
-# mpv-omniphony-fel for Dolby Access
+# mpy-omniphony (FEL Beta) for Dolby Access
 
 Language: English | [简体中文](README_zh-CN.md)
 
@@ -8,6 +8,22 @@ PCM static bed can be rendered by the active Windows Spatial Sound provider. It
 also fixes Spatial Sound stream reconstruction after seeking, runtime
 dependencies for the context menu, and persistent live refresh for Playback
 statistics.
+
+The local DD+ Atmos patch set repairs confirmed defects across the complete
+E-AC-3 JOC decode-and-render path; it is not selected by container or limited to
+online-media or Blu-ray delivery. Independent 5.1 streams retain their declared
+JOC input layout, while paired Blu-ray access units merge the independent core
+with discrete channels from the dependent substream before evaluating a
+declared 7-input JOC matrix.
+
+Harletty also corrects JOC dequantisation, sparse-matrix and interpolation edge
+cases, aligns bypassed LFE and OAMD events with the 577-sample JOC QMF path, and
+decodes OAMD gain, inheritance, position, warp, update timing and discontinuity
+semantics. The companion Omniphony patch retains metadata events across frame
+boundaries, applies every update at its exact sample, and renders object-gain
+ramps in both speaker and binaural paths. DD+ remains a lossy delivery format;
+these changes remove additional decoder/renderer errors rather than claiming
+bit-identical output to TrueHD Atmos.
 
 The audio device is not hardcoded; playback always uses the current Windows
 default multimedia output endpoint. Dolby Atmos for Headphones is the reference
@@ -38,9 +54,12 @@ mpv-omniphony-fel-dolby-access/
 ├── README_zh-CN.md                           # Simplified Chinese documentation
 ├── development/                              # Patches, tool sources, and build scripts
 │   ├── mpv/                                  # mpv patches
+│   ├── harletty/                             # E-AC-3/JOC decoder patch
+│   ├── omniphony/                            # Spatial metadata/rendering patches
 │   ├── scripts/                              # Source preparation and Windows build scripts
 │   └── tools/
-│       └── ispatialaudio-probe.c             # Standalone Spatial API probe source
+│       ├── ispatialaudio-probe.c             # Standalone Spatial API probe source
+│       └── compare-spatial-wav.py            # Per-channel PCM regression comparison
 ├── mpv-input.conf                            # Live statistics key bindings
 ├── omniphony-dolby-access.config.yaml        # 7.1.4 render configuration
 ├── overlay-prefs.conf                        # Spatial-object overlay preferences
@@ -130,6 +149,46 @@ runtime-base DLLs (excluding its README), then replaces `mpv.exe` and `mpv.com`
 with the newly built files. It stops if the output directory already exists to
 avoid silently overwriting a previous package.
 
+### Corrected DD+ Atmos decode and render path
+
+The DD+ Atmos fix is built separately from pristine Harletty v0.7.1 and
+Omniphony v0.4.1 sources. Use Rust 1.88 or newer with the MSVC target:
+
+- The Harletty patches reconstruct the declared 5- or 7-input JOC topology,
+  correct matrix reconstruction, delay bypassed LFE by the QMF path's 577
+  samples, and time-shift OAMD events by the same amount.
+- OAMD gain/status defaults, previous-object and previous-update inheritance,
+  differential positions, trim `warp_mode`, sequence discontinuities and all
+  block updates are decoded. A block starts at
+  `sample_offset + 32 * block_offset_factor`.
+- The Omniphony patch queues absolute metadata timestamps across decoded frames,
+  splits PCM at every due event boundary, and applies finite linear-amplitude
+  gain ramps in speaker and binaural rendering.
+
+```powershell
+.\development\scripts\prepare-harletty-source.ps1
+.\development\scripts\build-harletty-bridge.ps1
+```
+
+The first script copies both upstream trees into
+`build_temp/harletty-ddplus-fix/` and applies the tracked patches without
+modifying `sources/`. The second runs decoder and spatial-renderer regression
+tests and creates:
+
+```text
+distribution/harletty-bridge-v0.7.1-ddplus-atmos-fix-windows-x86_64/harletty_bridge.dll
+distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/
+  orender.dll
+  harletty_bridge.dll
+```
+
+The second directory is a complete runtime package based on the existing
+iSpatial mpv package, with only the corrected `orender.dll` replaced and the
+corrected bridge added. `play-dovi-atmos.bat` prefers this complete path. Set
+`HARLETTY_BRIDGE` only when testing another bridge; if the corrected package is
+absent, the launcher falls back to the original iSpatial package and upstream
+bridge under `releases/`.
+
 ### Spatial API probe
 
 If `clang` is available in `PATH`, build the standalone default-endpoint probe
@@ -147,9 +206,8 @@ Alternatively, select LLVM-MinGW with
 
 1. Enable the appropriate Dolby Atmos spatial-sound mode on the current default
    Windows audio device.
-2. Confirm that the local build is under
-   `distribution/mpv-omniphony-fel-windows-x86_64-ispatial/` and that an
-   unmodified `harletty_bridge.dll` is present under `releases/`.
+2. Confirm that the corrected runtime package is under
+   `distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/`.
 3. Double-click `play-dovi-atmos.bat`, drop a movie onto the window, and press
    Enter.
 
@@ -252,6 +310,22 @@ Verbose logs should show `Using hardware decoding (d3d11va)` once for the base
 layer and once for the enhancement layer. If they show `Using software decoding`,
 check the GPU driver and HEVC Main 10 hardware-decoding support. The `MPV_HWDEC`
 environment variable can also select another hardware backend supported by mpv.
+
+### DD+ Atmos sounds smeared, mispositioned, or has incorrect gain/muting
+
+Check both `Using mpv:` and `Using bridge:` in the launcher output. They should
+point into
+`distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/`; using only a
+corrected bridge with an older `orender.dll` leaves the metadata scheduler and
+gain-ramp defects in place. Verbose logs should select the `orender` decoder and
+request `fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr` float output.
+
+For core-plus-dependent streams, the corrected bridge merges the discrete
+surround extension before the 7-input JOC matrix instead of duplicating side
+surrounds into its rear inputs. For independent online-media streams, the same
+bridge follows the declared 5-input topology without that merge. Both paths use
+the corrected JOC reconstruction, 577-sample internal LFE/OAMD alignment and
+sample-accurate OAMD scheduling.
 
 ## License
 

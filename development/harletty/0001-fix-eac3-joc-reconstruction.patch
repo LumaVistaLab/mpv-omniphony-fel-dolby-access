@@ -1,0 +1,781 @@
+warning: in the working copy of 'eac3/src/eac3dec/joc.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/eac3dec/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/eac3dec/pcm.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/eac3dec/qmf.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/lib.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/eac3_pipeline.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/examples/joc_scan.rs', LF will be replaced by CRLF the next time Git touches it
+diff --git a/eac3/examples/joc_scan.rs b/eac3/examples/joc_scan.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..15f77687f28a9797285e4cf23f10a3079c422965
+--- /dev/null
++++ b/eac3/examples/joc_scan.rs
+@@ -0,0 +1,145 @@
++//! Summarize JOC coding modes used by a raw E-AC-3 elementary stream.
++//!
++//! `cargo run -p eac3 --example joc_scan -- <input.eb3>`
++
++use std::{collections::BTreeMap, fs, path::PathBuf};
++
++use eac3::{Extractor, ParsedEmdfPayloadData, inspect_access_unit};
++
++fn main() {
++    let input = std::env::args_os()
++        .nth(1)
++        .map(PathBuf::from)
++        .expect("usage: joc_scan <input.eb3>");
++    let bytes = fs::read(&input).expect("read input");
++    let mut extractor = Extractor::default();
++    extractor.push_bytes(&bytes);
++
++    let mut frames = 0usize;
++    let mut legacy_frames = 0usize;
++    let mut joc_frames = 0usize;
++    let mut active_objects = 0usize;
++    let mut sparse_objects = 0usize;
++    let mut steep_objects = 0usize;
++    let mut sparse_and_steep_objects = 0usize;
++    let mut one_point_objects = 0usize;
++    let mut two_point_objects = 0usize;
++    let mut bands_histogram = [0usize; 24];
++    let mut joc_shapes = BTreeMap::new();
++    let mut frame_shapes = BTreeMap::new();
++    let mut oamd_shapes = BTreeMap::new();
++    let mut bed_assignments = BTreeMap::new();
++    let mut oamd_payloads = 0usize;
++    let mut oamd_object_elements = 0usize;
++    let mut oamd_object_blocks = 0usize;
++    let mut parse_errors = 0usize;
++
++    while let Some(frame) = extractor.next_frame().expect("extract frame") {
++        frames += 1;
++        if frame.info().bitstream_id <= 10 {
++            legacy_frames += 1;
++            continue;
++        }
++        let info = match inspect_access_unit(frame.as_bytes()) {
++            Ok(info) => info,
++            Err(error) => {
++                parse_errors += 1;
++                eprintln!("frame {frames}: {error}");
++                continue;
++            }
++        };
++        *frame_shapes
++            .entry((
++                format!("{:?}", info.frame_type),
++                info.channel_mode,
++                info.fullband_channels,
++                info.lfe_on,
++                info.dependent_channel_map,
++            ))
++            .or_insert(0usize) += 1;
++        for payload in info.payloads() {
++            match &payload.parsed {
++                ParsedEmdfPayloadData::Joc(joc) => {
++                    joc_frames += 1;
++                    *joc_shapes
++                        .entry((joc.channel_count, joc.object_count))
++                        .or_insert(0usize) += 1;
++                    for object in &joc.objects {
++                        if !object.active {
++                            continue;
++                        }
++                        active_objects += 1;
++                        sparse_objects += usize::from(object.sparse_coded);
++                        steep_objects += usize::from(object.steep_slope);
++                        sparse_and_steep_objects +=
++                            usize::from(object.sparse_coded && object.steep_slope);
++                        one_point_objects += usize::from(object.data_points == 1);
++                        two_point_objects += usize::from(object.data_points == 2);
++                        if object.bands < bands_histogram.len() {
++                            bands_histogram[object.bands] += 1;
++                        }
++                    }
++                }
++                ParsedEmdfPayloadData::Oamd(oamd) => {
++                    oamd_payloads += 1;
++                    *oamd_shapes
++                        .entry((
++                            oamd.object_count,
++                            oamd.beds,
++                            oamd.bed_or_isf_objects,
++                            oamd.dynamic_objects,
++                            oamd.isf_index,
++                        ))
++                        .or_insert(0usize) += 1;
++                    *bed_assignments
++                        .entry(format!("{:?}", oamd.bed_assignment))
++                        .or_insert(0usize) += 1;
++                    for element in &oamd.elements {
++                        if let eac3::OamdElementKind::Object(object) = &element.kind {
++                            oamd_object_elements += 1;
++                            oamd_object_blocks +=
++                                object.object_blocks.iter().map(Vec::len).sum::<usize>();
++                        }
++                    }
++                }
++                ParsedEmdfPayloadData::Unknown => {}
++            }
++        }
++    }
++
++    println!("input={}", input.display());
++    println!("frames={frames}");
++    println!("legacy_frames={legacy_frames}");
++    println!("joc_frames={joc_frames}");
++    for ((frame_type, acmod, channels, lfe, chanmap), count) in frame_shapes {
++        println!(
++            "frame_type={frame_type} acmod={acmod} fullband_channels={channels} lfe={lfe} chanmap={chanmap:?} frames={count}"
++        );
++    }
++    for ((channels, objects), count) in joc_shapes {
++        println!("joc_channels={channels} objects={objects} payloads={count}");
++    }
++    println!("oamd_payloads={oamd_payloads}");
++    for ((objects, beds, bed_or_isf, dynamic, isf_index), count) in oamd_shapes {
++        println!(
++            "oamd_objects={objects} beds={beds} bed_or_isf={bed_or_isf} dynamic={dynamic} isf_index={isf_index:?} payloads={count}"
++        );
++    }
++    for (assignment, count) in bed_assignments {
++        println!("oamd_bed_assignment={assignment} payloads={count}");
++    }
++    println!("oamd_object_elements={oamd_object_elements}");
++    println!("oamd_object_blocks={oamd_object_blocks}");
++    println!("active_objects={active_objects}");
++    println!("sparse_objects={sparse_objects}");
++    println!("steep_objects={steep_objects}");
++    println!("sparse_and_steep_objects={sparse_and_steep_objects}");
++    println!("one_point_objects={one_point_objects}");
++    println!("two_point_objects={two_point_objects}");
++    for (bands, count) in bands_histogram.into_iter().enumerate() {
++        if count != 0 {
++            println!("objects_with_{bands}_bands={count}");
++        }
++    }
++    println!("parse_errors={parse_errors}");
++}
+diff --git a/eac3/src/eac3dec/joc.rs b/eac3/src/eac3dec/joc.rs
+index 242156421190c835dfb519ed5eba2080ead97679..9ca32f301e4c07ebe04fa0ffae81a825a7813ecf 100644
+--- a/eac3/src/eac3dec/joc.rs
++++ b/eac3/src/eac3dec/joc.rs
+@@ -6,7 +6,9 @@ use std::sync::OnceLock;
+ 
+ use super::metadata::{JocObject, JocObjectData, JocPayload};
+ use super::pcm::CorePcmFrame;
+-use super::qmf::{QMF_SUBBANDS, QmfSubbands, QuadratureMirrorFilterBank};
++use super::qmf::{
++    QMF_ANALYSIS_SYNTHESIS_DELAY, QMF_SUBBANDS, QmfSubbands, QuadratureMirrorFilterBank,
++};
+ use super::syncframe::ParseError;
+ use crate::BedChannel;
+ 
+@@ -37,6 +39,12 @@ pub type JocSubbandMatrix = Vec<[f32; 64]>;
+ pub type JocTimeslotMatrices = Vec<JocSubbandMatrix>;
+ pub type JocObjectMatrices = Vec<JocTimeslotMatrices>;
+ 
++/// Sample delay introduced by the JOC QMF analysis/synthesis path.
++///
++/// Signals that bypass JOC (currently LFE) and associated metadata must use the
++/// same delay to remain sample-aligned with reconstructed object PCM.
++pub const JOC_QMF_DELAY_SAMPLES: usize = QMF_ANALYSIS_SYNTHESIS_DELAY;
++
+ type SubbandMatrix = JocSubbandMatrix;
+ type TimeslotMatrices = JocTimeslotMatrices;
+ 
+@@ -50,6 +58,8 @@ pub(crate) struct JocObjectDecoderState {
+     inverse_history: Vec<bool>,
+     analysis: Vec<QmfSubbands>,
+     last_frame_matrices: JocObjectMatrices,
++    bypass_delay: Vec<f32>,
++    bypass_delay_pos: usize,
+ }
+ 
+ impl JocObjectDecoderState {
+@@ -62,6 +72,8 @@ impl JocObjectDecoderState {
+         self.inverse_history.clear();
+         self.analysis.clear();
+         self.last_frame_matrices.clear();
++        self.bypass_delay.clear();
++        self.bypass_delay_pos = 0;
+     }
+ 
+     pub fn decode_frame(
+@@ -144,6 +156,27 @@ impl JocObjectDecoderState {
+         &self.last_frame_matrices
+     }
+ 
++    /// Delay the LFE channel, which bypasses JOC, by the measured QMF
++    /// analysis/synthesis latency so it remains aligned with object PCM.
++    pub fn align_bypassed_lfe(&mut self, lfe: Option<&mut Vec<f32>>) {
++        let Some(samples) = lfe else {
++            self.bypass_delay.clear();
++            self.bypass_delay_pos = 0;
++            return;
++        };
++        if self.bypass_delay.len() != JOC_QMF_DELAY_SAMPLES {
++            self.bypass_delay.resize(JOC_QMF_DELAY_SAMPLES, 0.0);
++            self.bypass_delay_pos = 0;
++        }
++        for sample in samples {
++            std::mem::swap(sample, &mut self.bypass_delay[self.bypass_delay_pos]);
++            self.bypass_delay_pos += 1;
++            if self.bypass_delay_pos == JOC_QMF_DELAY_SAMPLES {
++                self.bypass_delay_pos = 0;
++            }
++        }
++    }
++
+     fn reconfigure(&mut self, channel_count: usize, object_count: usize) {
+         self.forward_qmf
+             .resize_with(channel_count, QuadratureMirrorFilterBank::new);
+@@ -290,16 +323,12 @@ fn build_object_timeslots(
+     let mapping = expanded_parameter_band_mapping(bands_index)?;
+     if object.data_points == 1 {
+         if object.steep_slope {
+-            let split = timeslot_offsets[0].min(timeslots as u8) as usize;
+             for (timeslot, matrix) in output.iter_mut().enumerate() {
+-                let source = if timeslot < split {
+-                    prev_matrix.as_slice()
+-                } else if timeslot < timeslot_offsets[1] as usize {
+-                    mix_matrix[1].as_slice()
++                if timeslot < timeslot_offsets[0] as usize {
++                    copy_matrix(matrix, prev_matrix);
+                 } else {
+-                    mix_matrix[0].as_slice()
+-                };
+-                copy_matrix(matrix, source);
++                    copy_matrix_mapped(matrix, &mix_matrix[0], mapping);
++                }
+             }
+         } else {
+             for (timeslot, matrix) in output.iter_mut().enumerate() {
+@@ -309,12 +338,13 @@ fn build_object_timeslots(
+         }
+     } else if object.steep_slope {
+         for (timeslot, matrix) in output.iter_mut().enumerate() {
+-            let source = if timeslot + 1 < timeslot_offsets[0] as usize {
+-                prev_matrix.as_slice()
++            if timeslot < timeslot_offsets[0] as usize {
++                copy_matrix(matrix, prev_matrix);
++            } else if timeslot < timeslot_offsets[1] as usize {
++                copy_matrix_mapped(matrix, &mix_matrix[0], mapping);
+             } else {
+-                mix_matrix[0].as_slice()
+-            };
+-            copy_matrix(matrix, source);
++                copy_matrix_mapped(matrix, &mix_matrix[1], mapping);
++            }
+         }
+     } else {
+         let first_half = (timeslots >> 1).max(1);
+@@ -322,7 +352,7 @@ fn build_object_timeslots(
+             let timeslot_index = timeslot + 1;
+             if timeslot_index <= first_half {
+                 let lerp = timeslot_index as f32 / first_half as f32;
+-                lerp_matrix(matrix, prev_matrix, &mix_matrix[0], lerp);
++                lerp_matrix_to_mapped(matrix, prev_matrix, &mix_matrix[0], mapping, lerp);
+             } else {
+                 let second_len = (timeslots - first_half).max(1);
+                 let lerp = (timeslot_index - first_half) as f32 / second_len as f32;
+@@ -387,6 +417,15 @@ fn decode_parameter_points(
+         .quantization_table
+         .ok_or(ParseError::InvalidHeader("joc_num_quant_idx"))?
+         as usize;
++    if quantization_table > 1 {
++        return Err(ParseError::InvalidHeader("joc_num_quant_idx"));
++    }
++    if channel_count == 0 {
++        return Err(ParseError::InvalidHeader("joc-channel-count"));
++    }
++    let quantized_values = 96 * (quantization_table + 1);
++    let quantized_center = quantized_values / 2;
++    let dequant_step = 820.0f32 / (4096.0 * (quantization_table + 1) as f32);
+     let bands = object.bands;
+     let data_points = object.data_points;
+     let data = object
+@@ -405,9 +444,6 @@ fn decode_parameter_points(
+             if matrices.len() != data_points {
+                 return Err(ParseError::InvalidHeader("joc_dense_points"));
+             }
+-            let gain_step = 0.2f32 - quantization_table as f32 * 0.1f32;
+-            let center = (quantization_table as f32 * 48.0 + 48.0) * gain_step;
+-            let max = center * 2.0;
+             for (data_point, source) in matrices.iter().enumerate() {
+                 if source.len() != channel_count {
+                     return Err(ParseError::InvalidHeader("joc_dense_channels"));
+@@ -417,14 +453,11 @@ fn decode_parameter_points(
+                         return Err(ParseError::InvalidHeader("joc_dense_bands"));
+                     }
+                     let channel = &mut mix_matrix[data_point][channel_index];
+-                    let mut current = 0.0f32;
++                    let mut current = quantized_center;
+                     for (band_index, value) in source_channel.iter().enumerate() {
+-                        current = if band_index == 0 {
+-                            (center + *value as f32 * gain_step) % max
+-                        } else {
+-                            (current + *value as f32 * gain_step) % max
+-                        };
+-                        channel[band_index] = current - center;
++                        current = (current + *value as usize) % quantized_values;
++                        channel[band_index] =
++                            dequantize_joc(current, quantized_center, dequant_step);
+                     }
+                 }
+             }
+@@ -436,17 +469,35 @@ fn decode_parameter_points(
+             if channel_indices.len() != data_points || vectors.len() != data_points {
+                 return Err(ParseError::InvalidHeader("joc_sparse_points"));
+             }
+-            // The public documentation for this sparse coding path is ambiguous and
+-            // reconstructing it naively produces obvious artifacts, so fall back to a zero
+-            // matrix until the coding path is specified well enough to decode safely.
++            let sparse_offset = 50 * (quantization_table + 1);
+             for data_point in 0..data_points {
+                 if channel_indices[data_point].len() != bands || vectors[data_point].len() != bands
+                 {
+                     return Err(ParseError::InvalidHeader("joc_sparse_bands"));
+                 }
+-                for channel in &mut mix_matrix[data_point] {
+-                    for band in &mut channel[..bands] {
+-                        *band = 0.0;
++                let mut previous_quantized = vec![sparse_offset; channel_count];
++                for band_index in 0..bands {
++                    let channel_index = if band_index == 0 {
++                        channel_indices[data_point][band_index] as usize
++                    } else {
++                        (channel_indices[data_point][band_index - 1] as usize
++                            + channel_indices[data_point][band_index] as usize)
++                            % channel_count
++                    };
++                    if channel_index >= channel_count {
++                        return Err(ParseError::InvalidHeader("joc_sparse_channel"));
++                    }
++                    for (candidate, channel) in mix_matrix[data_point].iter_mut().enumerate() {
++                        let quantized = if candidate == channel_index {
++                            (previous_quantized[candidate]
++                                + vectors[data_point][band_index] as usize)
++                                % quantized_values
++                        } else {
++                            sparse_offset
++                        };
++                        channel[band_index] =
++                            dequantize_joc(quantized, quantized_center, dequant_step);
++                        previous_quantized[candidate] = quantized;
+                     }
+                 }
+             }
+@@ -455,6 +506,10 @@ fn decode_parameter_points(
+     Ok(())
+ }
+ 
++fn dequantize_joc(value: usize, center: usize, step: f32) -> f32 {
++    (value as isize - center as isize) as f32 * step
++}
++
+ fn expanded_parameter_band_mapping(
+     bands_index: usize,
+ ) -> Result<&'static [u8; QMF_SUBBANDS], ParseError> {
+@@ -483,15 +538,14 @@ fn copy_matrix(target: &mut SubbandMatrix, source: &[[f32; QMF_SUBBANDS]]) {
+     }
+ }
+ 
+-fn lerp_matrix(
++fn copy_matrix_mapped(
+     target: &mut SubbandMatrix,
+-    from: &[[f32; QMF_SUBBANDS]],
+-    to: &[[f32; QMF_SUBBANDS]],
+-    lerp: f32,
++    source: &[[f32; QMF_SUBBANDS]],
++    mapping: &[u8; QMF_SUBBANDS],
+ ) {
+-    for ((dst, src_from), src_to) in target.iter_mut().zip(from.iter()).zip(to.iter()) {
++    for (dst, src) in target.iter_mut().zip(source.iter()) {
+         for subband in 0..QMF_SUBBANDS {
+-            dst[subband] = src_from[subband] + (src_to[subband] - src_from[subband]) * lerp;
++            dst[subband] = src[mapping[subband] as usize];
+         }
+     }
+ }
+@@ -544,11 +598,17 @@ fn update_prev_matrix(
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        build_object_timeslots, decode_parameter_points, expanded_parameter_band_mapping,
+-        map_input_channel_indices,
++        JOC_QMF_DELAY_SAMPLES, JocObjectDecoderState, build_object_timeslots,
++        decode_parameter_points, expanded_parameter_band_mapping, map_input_channel_indices,
+     };
+     use crate::{BedChannel, CorePcmFrame, JocObject, JocObjectData};
+ 
++    const COARSE_STEP: f32 = 820.0 / 4096.0;
++
++    fn assert_close(actual: f32, expected: f32) {
++        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
++    }
++
+     #[test]
+     fn parameter_band_mapping_expands_last_band() {
+         let mapping = expanded_parameter_band_mapping(7).expect("mapping");
+@@ -596,7 +656,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn sparse_joc_falls_back_to_silence() {
++    fn sparse_joc_decodes_differential_matrix() {
+         let object = JocObject {
+             active: true,
+             bands_index: Some(1),
+@@ -604,43 +664,29 @@ mod tests {
+             sparse_coded: true,
+             quantization_table: Some(0),
+             steep_slope: false,
+-            data_points: 2,
++            data_points: 1,
+             timeslot_offsets: Vec::new(),
+             data: Some(JocObjectData::Sparse {
+-                channel_indices: vec![vec![0, 1, 0], vec![1, 0, 1]],
+-                vectors: vec![vec![4, 5, 6], vec![7, 8, 9]],
++                channel_indices: vec![vec![0, 1, 0]],
++                vectors: vec![vec![4, 5, 6]],
+             }),
+         };
+ 
+-        let mut mix_matrix = [vec![[1.0; 64]; 5], vec![[2.0; 64]; 5]];
++        let mut mix_matrix = [vec![[0.0; 64]; 2], vec![[0.0; 64]; 2]];
+         let mut timeslot_offsets = [0; 2];
+-        decode_parameter_points(&mut mix_matrix, &mut timeslot_offsets, &object, 5)
++        decode_parameter_points(&mut mix_matrix, &mut timeslot_offsets, &object, 2)
+             .expect("points");
+ 
+-        assert!(
+-            mix_matrix[0]
+-                .iter()
+-                .all(|channel| channel[..3].iter().all(|value| *value == 0.0))
+-        );
+-        assert!(
+-            mix_matrix[0]
+-                .iter()
+-                .all(|channel| channel[3..].iter().all(|value| *value == 1.0))
+-        );
+-        assert!(
+-            mix_matrix[1]
+-                .iter()
+-                .all(|channel| channel[..3].iter().all(|value| *value == 0.0))
+-        );
+-        assert!(
+-            mix_matrix[1]
+-                .iter()
+-                .all(|channel| channel[3..].iter().all(|value| *value == 2.0))
+-        );
++        assert_close(mix_matrix[0][0][0], 6.0 * COARSE_STEP);
++        assert_close(mix_matrix[0][1][0], 2.0 * COARSE_STEP);
++        assert_close(mix_matrix[0][0][1], 2.0 * COARSE_STEP);
++        assert_close(mix_matrix[0][1][1], 7.0 * COARSE_STEP);
++        assert_close(mix_matrix[0][0][2], 2.0 * COARSE_STEP);
++        assert_close(mix_matrix[0][1][2], 13.0 * COARSE_STEP);
+     }
+ 
+     #[test]
+-    fn steep_multi_point_uses_reference_timeslot_comparison() {
++    fn steep_two_point_uses_both_offsets_and_expands_parameter_bands() {
+         let object = JocObject {
+             active: true,
+             bands_index: Some(0),
+@@ -649,14 +695,14 @@ mod tests {
+             quantization_table: Some(0),
+             steep_slope: true,
+             data_points: 2,
+-            timeslot_offsets: vec![2, 1],
++            timeslot_offsets: vec![1, 3],
+             data: Some(JocObjectData::Dense {
+                 matrices: vec![vec![vec![0]], vec![vec![1]]],
+             }),
+         };
+ 
+         let mut prev_matrix = vec![[1.0; 64]];
+-        let mut mix_matrix = [vec![[0.0; 64]], vec![[0.2; 64]]];
++        let mut mix_matrix = [vec![[0.0; 64]], vec![[0.0; 64]]];
+         let mut timeslot_offsets = [0; 2];
+         decode_parameter_points(&mut mix_matrix, &mut timeslot_offsets, &object, 1)
+             .expect("points");
+@@ -672,18 +718,22 @@ mod tests {
+         .expect("timeslots");
+ 
+         assert!(output[0][0].iter().all(|value| *value == 1.0));
+-        assert!(output[2][0].iter().all(|value| *value == 0.0));
+-        assert!(output[3][0].iter().all(|value| *value == 0.0));
+         assert!(output[1][0].iter().all(|value| *value == 0.0));
++        assert!(output[2][0].iter().all(|value| *value == 0.0));
++        assert!(
++            output[3][0]
++                .iter()
++                .all(|value| (*value - COARSE_STEP).abs() < 1e-6)
++        );
+         assert!(
+             prev_matrix[0]
+                 .iter()
+-                .all(|value| (*value - 0.2).abs() < 1e-6)
++                .all(|value| (*value - COARSE_STEP).abs() < 1e-6)
+         );
+     }
+ 
+     #[test]
+-    fn steep_single_point_can_reuse_stale_second_slot() {
++    fn steep_single_point_does_not_reuse_stale_second_slot() {
+         let previous = JocObject {
+             active: true,
+             bands_index: Some(0),
+@@ -731,11 +781,79 @@ mod tests {
+         .expect("timeslots");
+ 
+         assert!(output[0][0].iter().all(|value| *value == 1.0));
+-        assert!((output[1][0][0] - 0.2).abs() < 1e-6);
+-        assert!(output[1][0][1..].iter().all(|value| *value == 0.0));
+-        assert!((output[2][0][0] - 0.2).abs() < 1e-6);
+-        assert!(output[2][0][1..].iter().all(|value| *value == 0.0));
++        assert!(output[1][0].iter().all(|value| *value == 0.0));
++        assert!(output[2][0].iter().all(|value| *value == 0.0));
+         assert!(output[3][0].iter().all(|value| *value == 0.0));
+         assert!(prev_matrix[0].iter().all(|value| *value == 0.0));
+     }
++
++    #[test]
++    fn smooth_two_point_expands_first_half_parameter_bands() {
++        let object = JocObject {
++            active: true,
++            bands_index: Some(0),
++            bands: 1,
++            sparse_coded: false,
++            quantization_table: Some(0),
++            steep_slope: false,
++            data_points: 2,
++            timeslot_offsets: Vec::new(),
++            data: Some(JocObjectData::Dense {
++                matrices: vec![vec![vec![1]], vec![vec![2]]],
++            }),
++        };
++        let mut mix_matrix = [vec![[0.0; 64]], vec![[0.0; 64]]];
++        let mut timeslot_offsets = [0; 2];
++        decode_parameter_points(&mut mix_matrix, &mut timeslot_offsets, &object, 1)
++            .expect("points");
++        let mut prev_matrix = vec![[0.0; 64]];
++        let mut output = vec![vec![[0.0; 64]]; 4];
++        build_object_timeslots(
++            &mut prev_matrix,
++            &mix_matrix,
++            timeslot_offsets,
++            &object,
++            4,
++            &mut output,
++        )
++        .expect("timeslots");
++
++        for (timeslot, multiplier) in [0.5, 1.0, 1.5, 2.0].into_iter().enumerate() {
++            assert!(
++                output[timeslot][0]
++                    .iter()
++                    .all(|value| (*value - multiplier * COARSE_STEP).abs() < 1e-6)
++            );
++        }
++    }
++
++    #[test]
++    fn bypassed_lfe_is_delayed_to_match_qmf_objects() {
++        let mut state = JocObjectDecoderState::default();
++        let mut first = vec![1.0; 1536];
++        state.align_bypassed_lfe(Some(&mut first));
++        assert!(
++            first[..JOC_QMF_DELAY_SAMPLES]
++                .iter()
++                .all(|sample| *sample == 0.0)
++        );
++        assert!(
++            first[JOC_QMF_DELAY_SAMPLES..]
++                .iter()
++                .all(|sample| *sample == 1.0)
++        );
++
++        let mut second = vec![2.0; 1536];
++        state.align_bypassed_lfe(Some(&mut second));
++        assert!(
++            second[..JOC_QMF_DELAY_SAMPLES]
++                .iter()
++                .all(|sample| *sample == 1.0)
++        );
++        assert!(
++            second[JOC_QMF_DELAY_SAMPLES..]
++                .iter()
++                .all(|sample| *sample == 2.0)
++        );
++    }
+ }
+diff --git a/eac3/src/eac3dec/mod.rs b/eac3/src/eac3dec/mod.rs
+index 13ec896ba12b3794f8ce07b5e1adf0104e4e5b05..ba32f9bcd8718fc85f137c547a0c5c0510e6131e 100644
+--- a/eac3/src/eac3dec/mod.rs
++++ b/eac3/src/eac3dec/mod.rs
+@@ -11,6 +11,7 @@ mod qmf;
+ mod syncframe;
+ 
+ pub use decoder::{Decoder, PushResult};
++pub use joc::JOC_QMF_DELAY_SAMPLES;
+ pub use metadata::{
+     JocObject, JocObjectData, JocPayload, OamdBlockUpdate, OamdElement, OamdElementKind,
+     OamdObjectBlock, OamdObjectElement, OamdPayload, ParsedEmdfPayloadData, ParsedEmdfPayloadKind,
+diff --git a/eac3/src/eac3dec/pcm.rs b/eac3/src/eac3dec/pcm.rs
+index 5559ab08b98660725a9d166e170c1c28f6ebc070..339a0b65d5cd4a0af8ff3f83aab44a8f63deb0ec 100644
+--- a/eac3/src/eac3dec/pcm.rs
++++ b/eac3/src/eac3dec/pcm.rs
+@@ -303,8 +303,9 @@ impl ObjectPcmDecoder {
+             return Ok(None);
+         };
+ 
+-        let core = decode_core_pcm_frame_with_state(access_unit, &info, &mut self.core_state)?;
++        let mut core = decode_core_pcm_frame_with_state(access_unit, &info, &mut self.core_state)?;
+         let object_channels = self.joc_state.decode_frame(&core, &joc)?;
++        self.joc_state.align_bypassed_lfe(core.lfe_channel.as_mut());
+         let object_active = joc.objects.iter().map(|object| object.active).collect();
+         let oamd_payloads = info
+             .payloads()
+@@ -334,7 +335,7 @@ impl ObjectPcmDecoder {
+     pub fn push_access_unit_with_core(
+         &mut self,
+         access_unit: &[u8],
+-        core: CorePcmFrame,
++        mut core: CorePcmFrame,
+     ) -> Result<Option<ObjectPcmPushResult>, ParseError> {
+         self.apply_debug_log_level();
+         let info = inspect_access_unit_with_metadata_state(
+@@ -365,6 +366,7 @@ impl ObjectPcmDecoder {
+         };
+ 
+         let object_channels = self.joc_state.decode_frame(&core, &joc)?;
++        self.joc_state.align_bypassed_lfe(core.lfe_channel.as_mut());
+         let object_active = joc.objects.iter().map(|object| object.active).collect();
+         let oamd_payloads = info
+             .payloads()
+diff --git a/eac3/src/eac3dec/qmf.rs b/eac3/src/eac3dec/qmf.rs
+index 1d974ae2cf5683afe26eb38144b9168ee9095895..9ede1de3c9179a48e34e118eefdfcceffb715239 100644
+--- a/eac3/src/eac3dec/qmf.rs
++++ b/eac3/src/eac3dec/qmf.rs
+@@ -11,6 +11,9 @@ use std::arch::aarch64::{
+ };
+ 
+ pub(crate) const QMF_SUBBANDS: usize = 64;
++/// Peak latency of an identity analysis/synthesis pass using the normative
++/// 640-tap QMF pair.  Bypassed signals must be delayed by the same amount.
++pub(crate) const QMF_ANALYSIS_SYNTHESIS_DELAY: usize = 577;
+ const QMF_DOUBLE_LENGTH: usize = QMF_SUBBANDS * 2;
+ const QMF_COEFFS_LEN: usize = 640;
+ const QMF_FORWARD_RING_LEN: usize = QMF_COEFFS_LEN;
+@@ -567,6 +570,32 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn analysis_synthesis_impulse_has_known_latency_and_unity_peak() {
++        let mut analysis = QuadratureMirrorFilterBank::new();
++        let mut synthesis = QuadratureMirrorFilterBank::new();
++        let mut response = Vec::new();
++
++        for block_index in 0..32 {
++            let mut input = [0.0f32; QMF_SUBBANDS];
++            if block_index == 0 {
++                input[0] = 1.0;
++            }
++            let subbands = analysis.process_forward(&input);
++            let mut output = [0.0f32; QMF_SUBBANDS];
++            synthesis.process_inverse(&subbands, &mut output);
++            response.extend(output);
++        }
++
++        let (peak_index, peak) = response
++            .iter()
++            .enumerate()
++            .max_by(|(_, lhs), (_, rhs)| lhs.abs().total_cmp(&rhs.abs()))
++            .expect("impulse response");
++        assert_eq!(peak_index, QMF_ANALYSIS_SYNTHESIS_DELAY);
++        assert!((peak - 1.0).abs() < 1e-5, "peak={peak}");
++    }
++
+     fn next_block(seed: &mut u32) -> [f32; QMF_SUBBANDS] {
+         let mut output = [0.0f32; QMF_SUBBANDS];
+         for sample in &mut output {
+diff --git a/eac3/src/lib.rs b/eac3/src/lib.rs
+index c18d6ba3f09f3b0b4a84e6d47d04d19305bea68a..5520b8762daba45fa7764e5ec099a51733c0a4ba 100644
+--- a/eac3/src/lib.rs
++++ b/eac3/src/lib.rs
+@@ -7,9 +7,9 @@ mod types;
+ 
+ pub use eac3dec::{
+     AccessUnitInfo, AudioFrameInfo, AuxParseStatus, BlockDrcInfo, CorePcmFrame, Decoder,
+-    EmdfBlockInfo, EmdfPayloadInfo, EmdfSource, FrameType, JocObject, JocObjectData, JocPayload,
+-    OamdBlockUpdate, OamdElement, OamdElementKind, OamdObjectBlock, OamdObjectElement,
+-    OamdPayload, ObjectPcmDecoder, ObjectPcmFrame, ObjectPcmPushResult,
++    EmdfBlockInfo, EmdfPayloadInfo, EmdfSource, FrameType, JOC_QMF_DELAY_SAMPLES, JocObject,
++    JocObjectData, JocPayload, OamdBlockUpdate, OamdElement, OamdElementKind, OamdObjectBlock,
++    OamdObjectElement, OamdPayload, ObjectPcmDecoder, ObjectPcmFrame, ObjectPcmPushResult,
+     ParseError as AccessUnitParseError, ParsedEmdfPayloadData, ParsedEmdfPayloadKind, PayloadInfo,
+     PcmDecoder, PcmPushResult, PushResult, SkipFieldInfo, inspect_access_unit,
+ };
+diff --git a/src/eac3_pipeline.rs b/src/eac3_pipeline.rs
+index 90921541a2fd3468b49ff4fbd7b307387af2d2df..da8a0fd4d8c14be8978424e111acd78f26c6c893 100644
+--- a/src/eac3_pipeline.rs
++++ b/src/eac3_pipeline.rs
+@@ -1,8 +1,8 @@
+ use abi_stable::std_types::RVec;
+ use bridge_api::{RChannelLabel, RDecodedFrame, RMetadataFrame};
+ use eac3::{
+-    AccessUnitInfo, BedChannel, CorePcmFrame, FrameType, OamdPayload, ObjectPcmPushResult,
+-    ParsedEmdfPayloadData, inspect_access_unit,
++    AccessUnitInfo, BedChannel, CorePcmFrame, FrameType, JOC_QMF_DELAY_SAMPLES, OamdPayload,
++    ObjectPcmPushResult, ParsedEmdfPayloadData, inspect_access_unit,
+ };
+ use std::sync::OnceLock;
+ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+@@ -208,12 +208,24 @@ pub(crate) fn process_eac3_dependent_frame_with_core(
+         bridge.eac3_total_samples += sample_count as u64;
+         bridge.eac3_diag_stats.dependent_pair_channel_beds += 1;
+         bridge.perf.maybe_report(bridge.eac3_frame_count);
+-        return Ok(Some(build_eac3_channel_bed_frame(&bed, Some(&dep_info), bridge)));
++        return Ok(Some(build_eac3_channel_bed_frame(
++            &bed,
++            Some(&dep_info),
++            bridge,
++        )));
+     }
+ 
++    // JOC's `channel_count` describes the full compatible presentation, not
++    // merely the backward-compatible AC-3 core.  A dependent Atmos substream
++    // commonly carries discrete Ls/Rs/Lrs/Rrs (chanmap 0x1A00); feed those
++    // decoded channels to the 7-input JOC matrix.  Passing the 5.1 core alone
++    // made the JOC decoder duplicate Ls/Rs into the rear inputs, corrupting the
++    // reconstructed rear and height objects.
++    let joc_core = merge_eac3_core_with_dependent(bridge, &core, frame).unwrap_or(core);
++
+     match bridge
+         .eac3_object_decoder
+-        .push_access_unit_with_core(frame, core)
++        .push_access_unit_with_core(frame, joc_core)
+     {
+         Ok(Some(result)) => {
+             update_eac3_dialogue_level(bridge, &result.info);
+@@ -551,13 +563,14 @@ fn build_eac3_frame_from_object(
+     let mut metadata_events = 0usize;
+     if bed_object_labels.is_none() {
+         let bed_indices = eac3_object_output_bed_indices(core);
++        let aligned_sample_pos = base_sample_pos + JOC_QMF_DELAY_SAMPLES as u64;
+         for (oamd, sample_offset) in &pcm_frame.oamd_payloads {
+-            let evo_base = base_sample_pos + sample_offset.unwrap_or(0) as u64;
++            let evo_base = aligned_sample_pos + sample_offset.unwrap_or(0) as u64;
+             let oamd_ref: &OamdPayload = oamd;
+             let meta = build_eac3_metadata_frame(
+                 oamd_ref,
+                 evo_base,
+-                base_sample_pos,
++                aligned_sample_pos,
+                 &bed_indices,
+                 object_channels,
+                 bridge,
+

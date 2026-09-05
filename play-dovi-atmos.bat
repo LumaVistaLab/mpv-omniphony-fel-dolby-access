@@ -37,6 +37,15 @@ echo   "%MPV_SPATIAL%"
 exit /b 1
 
 :find_default_mpv
+set "PATCHED_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix"
+if exist "%PATCHED_MPV_DIR%\mpv.com" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.com"
+    goto :found_mpv
+)
+if exist "%PATCHED_MPV_DIR%\mpv.exe" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.exe"
+    goto :found_mpv
+)
 set "SPATIAL_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ispatial"
 if exist "%SPATIAL_MPV_DIR%\mpv.com" (
     set "MPV=%SPATIAL_MPV_DIR%\mpv.com"
@@ -67,11 +76,31 @@ exit /b 1
 if not defined MPV_HWDEC set "MPV_HWDEC=d3d11va"
 
 set "BRIDGE="
+set "PATCHED_BRIDGE=%DISTRIBUTION%\harletty-bridge-v0.7.1-ddplus-atmos-fix-windows-x86_64\harletty_bridge.dll"
+if defined HARLETTY_BRIDGE (
+    if exist "%HARLETTY_BRIDGE%" (
+        set "BRIDGE=%HARLETTY_BRIDGE%"
+        goto :found_bridge
+    )
+    echo ERROR: HARLETTY_BRIDGE points to a missing file:
+    echo   "%HARLETTY_BRIDGE%"
+    exit /b 1
+)
+if defined PATCHED_MPV_DIR if exist "%PATCHED_MPV_DIR%\harletty_bridge.dll" (
+    set "BRIDGE=%PATCHED_MPV_DIR%\harletty_bridge.dll"
+    goto :found_bridge
+)
+if exist "%PATCHED_BRIDGE%" (
+    set "BRIDGE=%PATCHED_BRIDGE%"
+    goto :found_bridge
+)
 for /f "delims=" %%F in ('dir /b /s /a:-d "%RELEASES%\harletty_bridge.dll" 2^>nul') do set "BRIDGE=%%F" & goto :found_bridge
 
 :found_bridge
 if defined BRIDGE goto :bridge_ok
-echo ERROR: harletty_bridge.dll was not found under:
+echo ERROR: harletty_bridge.dll was not found at:
+echo   "%PATCHED_BRIDGE%"
+echo or under:
 echo   "%RELEASES%"
 exit /b 1
 

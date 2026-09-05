@@ -1,4 +1,4 @@
-# mpv-omniphony-fel for Dolby Access
+# mpy-omniphony (FEL Beta) for Dolby Access
 
 语言：简体中文 | [English](README.md)
 
@@ -6,6 +6,17 @@
 链路上增加 `ISpatialAudioClient` 输出，使带名称的 7.1.4 PCM 静态床交给 Windows
 Spatial Sound provider 渲染，并修复了 seek 后空间流重建、右键菜单运行时依赖和
 Playback statistics 持久实时刷新问题。
+
+本地 DD+ Atmos 补丁集修复的是完整 E-AC-3 JOC 解码与渲染链路中已经确认的问题，
+不会按封装格式选择，也不限于 online media 或 Blu-ray。独立 5.1 流保持码流声明的
+JOC 输入布局；Blu-ray 成对 access unit 则先把独立主帧与依赖子流中的离散通道
+合并，再计算码流声明的 7 输入 JOC 矩阵。
+
+Harletty 还修正了 JOC 反量化、稀疏矩阵和插值边界，让旁路 LFE 与 OAMD 事件对齐
+JOC QMF 路径的 577 样本延迟，并正确解码 OAMD 的增益、继承、位置、warp、更新时间
+和换段语义。配套的 Omniphony 补丁会跨帧保留元数据事件，在精确样本处应用每次
+更新，并在扬声器和双耳路径中渲染对象增益渐变。DD+ 仍然是有损传输格式；这些
+修复消除的是额外解码/渲染错误，并不宣称输出与 TrueHD Atmos 位级相同。
 
 音频设备不写死，始终使用 Windows 当前的默认多媒体输出端点。当前以 Dolby
 Atmos for Headphones 为基准；切换到支持的 HDMI 默认端点并启用 Dolby Atmos
@@ -32,9 +43,12 @@ mpv-omniphony-fel-dolby-access/
 ├── README_zh-CN.md                           # 简体中文文档
 ├── development/                              # 补丁、工具源码与构建脚本
 │   ├── mpv/                                  # mpv 补丁
+│   ├── harletty/                             # E-AC-3/JOC 解码器补丁
+│   ├── omniphony/                            # 空间元数据与渲染补丁
 │   ├── scripts/                              # 源码准备与 Windows 构建脚本
 │   └── tools/
-│       └── ispatialaudio-probe.c             # Spatial API 独立探针源码
+│       ├── ispatialaudio-probe.c             # Spatial API 独立探针源码
+│       └── compare-spatial-wav.py            # 分声道 PCM 回归比较工具
 ├── mpv-input.conf                            # 实时统计按键绑定
 ├── omniphony-dolby-access.config.yaml        # 7.1.4 渲染配置
 ├── overlay-prefs.conf                        # 空间对象 overlay 偏好
@@ -115,6 +129,39 @@ distribution/mpv-omniphony-fel-windows-x86_64-ispatial/
 包的 DLL（跳过其 README），再替换新编译的 `mpv.exe` 与 `mpv.com`；若目标目录
 已经存在，脚本会停止，避免静默覆盖。
 
+### 修正版 DD+ Atmos 解码与渲染链路
+
+DD+ Atmos 修复从干净的 Harletty v0.7.1 与 Omniphony v0.4.1 源码单独构建；请使用
+Rust 1.88 或更新版本以及 MSVC target：
+
+- Harletty 补丁按码流声明重建 5 或 7 输入 JOC 拓扑、修正矩阵重建，把旁路 LFE
+  延迟 QMF 路径的 577 样本，并让 OAMD 事件进行相同的时间平移。
+- OAMD 的增益/状态默认值、前一对象与前次更新继承、差分位置、trim
+  `warp_mode`、序列中断和全部 block update 均会被解析；block 起点为
+  `sample_offset + 32 * block_offset_factor`。
+- Omniphony 补丁跨解码帧排队绝对元数据时间戳，在每个到期事件的边界切分 PCM，
+  并在扬声器及双耳渲染中执行有限时长的线性振幅增益渐变。
+
+```powershell
+.\development\scripts\prepare-harletty-source.ps1
+.\development\scripts\build-harletty-bridge.ps1
+```
+
+第一个脚本把两份上游源码复制到 `build_temp/harletty-ddplus-fix/` 并应用 Git 所
+跟踪的补丁，不修改 `sources/`；第二个脚本运行解码器和空间渲染回归测试，并生成：
+
+```text
+distribution/harletty-bridge-v0.7.1-ddplus-atmos-fix-windows-x86_64/harletty_bridge.dll
+distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/
+  orender.dll
+  harletty_bridge.dll
+```
+
+第二个目录是完整可运行包：它以现有 iSpatial mpv 包为基础，仅替换修正版
+`orender.dll` 并加入修正版 bridge。`play-dovi-atmos.bat` 会优先使用这一整套链路。
+只有测试其他 bridge 构建时才需要用 `HARLETTY_BRIDGE` 显式指定 DLL；若修正版
+不存在，启动器仍会回退到原 iSpatial 包和 `releases/` 中的上游 DLL。
+
 ### Spatial API 探针
 
 若 `clang` 已在 `PATH` 中，可单独编译默认音频端点探针：
@@ -129,8 +176,8 @@ distribution/mpv-omniphony-fel-windows-x86_64-ispatial/
 ## 播放
 
 1. 在当前默认 Windows 音频设备上启用对应的 Dolby Atmos 空间音效模式。
-2. 确认本地构建位于 `distribution/mpv-omniphony-fel-windows-x86_64-ispatial/`，并且
-   `releases/` 中有原始 `harletty_bridge.dll`。
+2. 确认修正版运行包位于
+   `distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/`。
 3. 双击 `play-dovi-atmos.bat`，拖入影片并按 Enter。
 
 Omniphony Studio 不是播放依赖，无需安装或预先启动。mpv 运行包自带
@@ -220,6 +267,19 @@ FEL 构建需要同时包含 mpv `dv-fel` 补丁、带 `dovi_split` 的 FFmpeg�
 应针对基础层和增强层各出现一次 `Using hardware decoding (d3d11va)`。如果日志
 显示 `Using software decoding`，请检查显卡驱动及 HEVC Main 10 硬解支持；也可用
 环境变量 `MPV_HWDEC` 临时指定 mpv 支持的其他硬解后端。
+
+### DD+ Atmos 声场发糊、定位错误或增益/静音异常
+
+检查启动器打印的 `Using mpv:` 与 `Using bridge:`；两者都应指向
+`distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/`。如果只替换 bridge
+而继续使用旧 `orender.dll`，元数据调度和增益渐变问题仍然存在。verbose 日志应选择
+`orender` 解码器，并请求
+`fl-fr-fc-lfe-bl-br-sl-sr-tfl-tfr-tbl-tbr` float 输出。
+
+对于主帧加依赖子流，修正版 bridge 会先合并离散环绕扩展，再计算 7 输入 JOC
+矩阵，不再把侧环绕复制到后环绕输入。对于独立 online-media 流，同一 bridge 会
+直接采用码流声明的 5 输入拓扑而不执行该合并。两条路径都会使用修正后的 JOC
+重建、577 样本内部 LFE/OAMD 对齐和样本精确的 OAMD 调度。
 
 ## 许可证
 

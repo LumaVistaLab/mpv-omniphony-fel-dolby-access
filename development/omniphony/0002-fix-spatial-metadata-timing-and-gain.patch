@@ -1,0 +1,623 @@
+warning: in the working copy of 'omniphony-renderer/orender_engine/src/engine.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'omniphony-renderer/renderer/src/binaural/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'omniphony-renderer/renderer/src/spatial_renderer/components.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'omniphony-renderer/renderer/src/spatial_renderer/construction.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'omniphony-renderer/renderer/src/spatial_renderer/mod.rs', LF will be replaced by CRLF the next time Git touches it
+diff --git a/omniphony-renderer/orender_engine/src/engine.rs b/omniphony-renderer/orender_engine/src/engine.rs
+index 72b1c4b..92fc2fa 100644
+--- a/omniphony-renderer/orender_engine/src/engine.rs
++++ b/omniphony-renderer/orender_engine/src/engine.rs
+@@ -15,7 +15,7 @@ use anyhow::{Result, anyhow, bail};
+ use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame, RInputTransport};
+ use renderer::config::Config;
+ use renderer::metering::AudioMeter;
+-use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
++use renderer::spatial_renderer::{RenderedFrame, SpatialChannelEvent, SpatialRenderer};
+ use renderer::speaker_layout::SpeakerLayout;
+ use std::collections::HashMap;
+ use std::path::Path;
+@@ -80,6 +80,10 @@ pub struct Engine {
+     applied_drc_mode: String,
+ 
+     // ── reusable scratch ──
++    /// Metadata events waiting for their absolute decoded-sample position.
++    /// OAMD can carry up to eight updates in one access unit, and the final
++    /// update may point beyond that unit, so this queue deliberately survives
++    /// frame boundaries.
+     frame_events: Vec<SpatialChannelEvent>,
+     pcm_f32_buf: Vec<f32>,
+ 
+@@ -960,11 +964,11 @@ impl Engine {
+         }
+ 
+         let render_started = std::time::Instant::now();
+-        let rendered = self.renderer.render_frame(
++        let rendered = self.render_scheduled_pcm(
+             &pcm_f32,
+             channel_count,
+-            &self.frame_events,
+-            Vec::new(),
++            sample_pos_at_start,
++            sample_count,
+             want_metering,
+         )?;
+         let render_time_ms = render_started.elapsed().as_secs_f32() * 1000.0;
+@@ -1002,8 +1006,6 @@ impl Engine {
+ 
+         // Return scratch buffers for reuse next frame.
+         self.pcm_f32_buf = pcm_f32;
+-        self.frame_events.clear();
+-
+         let n_channels = self.renderer.output_channel_count() as u32;
+ 
+         if want_metering {
+@@ -1057,6 +1059,141 @@ impl Engine {
+             sample_pos: sample_pos_at_start,
+         }))
+     }
++
++    /// Render one decoded frame while applying spatial metadata at its exact
++    /// sample boundary. `SpatialRenderer::render_frame` applies all supplied
++    /// events before the whole block, so a frame containing multiple OAMD
++    /// updates has to be split here. Events at or beyond the frame end remain
++    /// queued for the next decoded frame.
++    fn render_scheduled_pcm(
++        &mut self,
++        pcm: &[f32],
++        channel_count: usize,
++        frame_start: u64,
++        sample_count: usize,
++        measure_breakdown: bool,
++    ) -> Result<RenderedFrame> {
++        let due = take_due_events(&mut self.frame_events, frame_start, sample_count);
++
++        let mut output =
++            Vec::with_capacity(sample_count.saturating_mul(self.renderer.output_channel_count()));
++        let mut final_object_gains = Vec::new();
++        let mut final_object_band_gains = Vec::new();
++        let mut crossover_time_ms = 0.0;
++
++        let mut cursor = 0usize;
++        let mut current_event_start = 0usize;
++        let mut current_event_end = 0usize;
++        let mut event_index = 0usize;
++
++        while event_index < due.len() {
++            let event_offset = due[event_index]
++                .sample_pos
++                .unwrap_or(frame_start)
++                .saturating_sub(frame_start)
++                .min(sample_count as u64) as usize;
++
++            if event_offset > cursor {
++                let rendered = self.renderer.render_frame(
++                    &pcm[cursor * channel_count..event_offset * channel_count],
++                    channel_count,
++                    &due[current_event_start..current_event_end],
++                    Vec::new(),
++                    measure_breakdown,
++                )?;
++                output.extend_from_slice(&rendered.samples);
++                final_object_gains = rendered.object_gains;
++                final_object_band_gains = rendered.object_band_gains;
++                crossover_time_ms += rendered.crossover_time_ms;
++                cursor = event_offset;
++            }
++
++            current_event_start = event_index;
++            event_index += 1;
++            while event_index < due.len() {
++                let next_offset = due[event_index]
++                    .sample_pos
++                    .unwrap_or(frame_start)
++                    .saturating_sub(frame_start)
++                    .min(sample_count as u64) as usize;
++                if next_offset != event_offset {
++                    break;
++                }
++                event_index += 1;
++            }
++            current_event_end = event_index;
++        }
++
++        if cursor < sample_count {
++            let rendered = self.renderer.render_frame(
++                &pcm[cursor * channel_count..sample_count * channel_count],
++                channel_count,
++                &due[current_event_start..current_event_end],
++                Vec::new(),
++                measure_breakdown,
++            )?;
++            output.extend_from_slice(&rendered.samples);
++            final_object_gains = rendered.object_gains;
++            final_object_band_gains = rendered.object_band_gains;
++            crossover_time_ms += rendered.crossover_time_ms;
++        }
++
++        Ok(RenderedFrame {
++            samples: output,
++            object_gains: final_object_gains,
++            object_band_gains: final_object_band_gains,
++            crossover_time_ms,
++        })
++    }
++}
++
++fn take_due_events(
++    events: &mut Vec<SpatialChannelEvent>,
++    frame_start: u64,
++    sample_count: usize,
++) -> Vec<SpatialChannelEvent> {
++    events.sort_by_key(|event| event.sample_pos.unwrap_or(frame_start));
++    let frame_end = frame_start.saturating_add(sample_count as u64);
++    let due_count =
++        events.partition_point(|event| event.sample_pos.unwrap_or(frame_start) < frame_end);
++    let future = events.split_off(due_count);
++    std::mem::replace(events, future)
++}
++
++#[cfg(test)]
++mod scheduled_event_tests {
++    use super::*;
++
++    fn event(channel_idx: usize, sample_pos: Option<u64>) -> SpatialChannelEvent {
++        SpatialChannelEvent {
++            channel_idx,
++            is_bed: false,
++            gain_db: None,
++            ramp_length: None,
++            size: None,
++            position: None,
++            sample_pos,
++        }
++    }
++
++    #[test]
++    fn due_events_are_sorted_and_future_events_survive() {
++        let mut events = vec![
++            event(3, Some(110)),
++            event(2, Some(109)),
++            event(0, None),
++            event(1, Some(100)),
++        ];
++        let due = take_due_events(&mut events, 100, 10);
++        assert_eq!(
++            due.iter()
++                .map(|event| event.channel_idx)
++                .collect::<Vec<_>>(),
++            vec![0, 1, 2]
++        );
++        assert_eq!(events.len(), 1);
++        assert_eq!(events[0].channel_idx, 3);
++    }
+ }
+ 
+ /// Map the per-frame object metas to overlay positions `(id, x, y, z)`. The id
+diff --git a/omniphony-renderer/renderer/src/binaural/mod.rs b/omniphony-renderer/renderer/src/binaural/mod.rs
+index 6c7fe6e..96f56f6 100644
+--- a/omniphony-renderer/renderer/src/binaural/mod.rs
++++ b/omniphony-renderer/renderer/src/binaural/mod.rs
+@@ -220,6 +220,33 @@ impl BinauralRenderer {
+         chan_pos: &[[f64; 3]],
+         chan_gain: &[f32],
+         out: &mut [f32],
++    ) {
++        self.render_frame_with_gain_envelope(
++            input_pcm,
++            input_channel_count,
++            sample_length,
++            params,
++            chan_pos,
++            chan_gain,
++            &[],
++            out,
++        );
++    }
++
++    /// Variant used by the spatial renderer when stream metadata supplies a
++    /// sample-accurate gain ramp. `gain_envelope` is sample-major interleaved;
++    /// an empty slice falls back to the per-channel scalar gains.
++    #[allow(clippy::too_many_arguments)]
++    pub fn render_frame_with_gain_envelope(
++        &mut self,
++        input_pcm: &[f32],
++        input_channel_count: usize,
++        sample_length: usize,
++        params: &BinauralFrameParams,
++        chan_pos: &[[f64; 3]],
++        chan_gain: &[f32],
++        gain_envelope: &[f32],
++        out: &mut [f32],
+     ) {
+         let BinauralFrameParams {
+             head_pose,
+@@ -251,7 +278,14 @@ impl BinauralRenderer {
+ 
+         for c in 0..input_channel_count {
+             let gain = chan_gain.get(c).copied().unwrap_or(0.0);
+-            if gain == 0.0 {
++            let has_envelope = gain_envelope.len() == sample_length * input_channel_count;
++            let channel_audible = if has_envelope {
++                (0..sample_length)
++                    .any(|sample| gain_envelope[sample * input_channel_count + c] != 0.0)
++            } else {
++                gain != 0.0
++            };
++            if !channel_audible {
+                 // Keep an existing reflection bank fading out so a muted
+                 // channel does not freeze its taps at full gain.
+                 if let Some(Some(dsp)) = self.channels.get_mut(c) {
+@@ -355,7 +389,12 @@ impl BinauralRenderer {
+                 // adds its distance gain, the reflection taps theirs. The air
+                 // low-pass applies to the propagated wave, so it feeds the
+                 // direct, the reflections and the reverb send alike.
+-                let mut raw = input_pcm[s * input_channel_count + c] * gain;
++                let sample_gain = if has_envelope {
++                    gain_envelope[s * input_channel_count + c]
++                } else {
++                    gain
++                };
++                let mut raw = input_pcm[s * input_channel_count + c] * sample_gain;
+                 if air > 0.0 {
+                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
+                     raw = dsp.air_state;
+diff --git a/omniphony-renderer/renderer/src/spatial_renderer/components.rs b/omniphony-renderer/renderer/src/spatial_renderer/components.rs
+index fc6bb4c..e395573 100644
+--- a/omniphony-renderer/renderer/src/spatial_renderer/components.rs
++++ b/omniphony-renderer/renderer/src/spatial_renderer/components.rs
+@@ -114,15 +114,20 @@ pub struct SpatialChannelEvent {
+     /// Target position in ADM Cartesian coordinates [x, y, z] (`None` = unchanged).
+     /// x ∈ [-1, 1] left/right · y ∈ [-1, 1] back/front · z ∈ [-1, 1] floor/ceiling.
+     pub position: Option<[f64; 3]>,
+-    /// Sample index within the access unit where this event takes effect.
++    /// Absolute decoded-sample position where this event takes effect.
+     pub sample_pos: Option<u64>,
+ }
+ 
+ /// Per-channel state for movement detection and gain ramping
+ #[derive(Clone)]
+ pub(super) struct ChannelState {
+-    /// Gain in dB
++    /// Most recently signalled gain in dB (`-128` = mute).
+     pub(super) gain_db: i8,
++    gain_start_linear: f32,
++    gain_current_linear: f32,
++    gain_target_linear: f32,
++    gain_ramp_length: u64,
++    gain_ramp_remaining: u64,
+ 
+     pub(super) ramp: ChannelRampState,
+ 
+@@ -136,12 +141,97 @@ impl Default for ChannelState {
+     fn default() -> Self {
+         Self {
+             gain_db: -128, // -inf dB (muted)
++            gain_start_linear: 0.0,
++            gain_current_linear: 0.0,
++            gain_target_linear: 0.0,
++            gain_ramp_length: 0,
++            gain_ramp_remaining: 0,
+             ramp: ChannelRampState::default(),
+             interp_prev_gains: Vec::new(),
+         }
+     }
+ }
+ 
++impl ChannelState {
++    pub(super) fn set_gain_db(&mut self, gain_db: i8, ramp_length: u64) {
++        if self.gain_db == gain_db {
++            return;
++        }
++        self.gain_db = gain_db;
++        let target = if gain_db == -128 {
++            0.0
++        } else {
++            10.0_f32.powf(gain_db as f32 / 20.0)
++        };
++        if ramp_length == 0 || (target - self.gain_current_linear).abs() <= f32::EPSILON {
++            self.gain_start_linear = target;
++            self.gain_current_linear = target;
++            self.gain_target_linear = target;
++            self.gain_ramp_length = 0;
++            self.gain_ramp_remaining = 0;
++        } else {
++            self.gain_start_linear = self.gain_current_linear;
++            self.gain_target_linear = target;
++            self.gain_ramp_length = ramp_length;
++            self.gain_ramp_remaining = ramp_length;
++        }
++    }
++
++    /// Write and advance a sample-accurate linear-amplitude gain ramp. Linear
++    /// amplitude interpolation also gives finite fades to and from the OAMD
++    /// negative-infinity gain code.
++    pub(super) fn write_gain_envelope(
++        &mut self,
++        output: &mut Vec<f32>,
++        sample_length: usize,
++        multiplier: f32,
++    ) {
++        output.clear();
++        output.resize(sample_length, 0.0);
++        for gain in output {
++            if self.gain_ramp_remaining > 0 {
++                let completed = self.gain_ramp_length - self.gain_ramp_remaining + 1;
++                let progress = completed as f32 / self.gain_ramp_length as f32;
++                self.gain_current_linear = self.gain_start_linear
++                    + (self.gain_target_linear - self.gain_start_linear) * progress;
++                self.gain_ramp_remaining -= 1;
++                if self.gain_ramp_remaining == 0 {
++                    self.gain_current_linear = self.gain_target_linear;
++                }
++            } else {
++                self.gain_current_linear = self.gain_target_linear;
++            }
++            *gain = self.gain_current_linear * multiplier;
++        }
++    }
++}
++
++#[cfg(test)]
++mod gain_ramp_tests {
++    use super::ChannelState;
++
++    #[test]
++    fn gain_ramp_fades_from_mute_to_unity_per_sample() {
++        let mut state = ChannelState::default();
++        state.set_gain_db(0, 4);
++        let mut envelope = Vec::new();
++        state.write_gain_envelope(&mut envelope, 4, 1.0);
++        assert_eq!(envelope, vec![0.25, 0.5, 0.75, 1.0]);
++    }
++
++    #[test]
++    fn gain_ramp_continues_across_render_blocks() {
++        let mut state = ChannelState::default();
++        state.set_gain_db(0, 4);
++        let mut first = Vec::new();
++        let mut second = Vec::new();
++        state.write_gain_envelope(&mut first, 2, 1.0);
++        state.write_gain_envelope(&mut second, 2, 1.0);
++        assert_eq!(first, vec![0.25, 0.5]);
++        assert_eq!(second, vec![0.75, 1.0]);
++    }
++}
++
+ /// VBAP engine for one frequency band.
+ ///
+ /// Built with the same parameters as the main renderer (`table_mode`, `allow_negative_z`,
+diff --git a/omniphony-renderer/renderer/src/spatial_renderer/construction.rs b/omniphony-renderer/renderer/src/spatial_renderer/construction.rs
+index 97576d5..437fb73 100644
+--- a/omniphony-renderer/renderer/src/spatial_renderer/construction.rs
++++ b/omniphony-renderer/renderer/src/spatial_renderer/construction.rs
+@@ -584,6 +584,7 @@ impl SpatialRenderer {
+             object_params_generation_seen: 0,
+             speaker_params_generation_seen: 0,
+             bed_routing_gains_buf: vec![0.0f32; num_speakers],
++            gain_envelope_scratch: Vec::new(),
+             delay_lines: {
+                 let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
+                 (0..num_speakers)
+@@ -594,6 +595,7 @@ impl SpatialRenderer {
+             binaural: crate::binaural::BinauralRenderer::new(sample_rate),
+             binaural_pos_buf: Vec::new(),
+             binaural_gain_buf: Vec::new(),
++            binaural_gain_envelope_buf: Vec::new(),
+             render_bands,
+             unified_table,
+             render_bands_topology_identity: topology_identity,
+diff --git a/omniphony-renderer/renderer/src/spatial_renderer/mod.rs b/omniphony-renderer/renderer/src/spatial_renderer/mod.rs
+index 7116d7c..b2255a8 100644
+--- a/omniphony-renderer/renderer/src/spatial_renderer/mod.rs
++++ b/omniphony-renderer/renderer/src/spatial_renderer/mod.rs
+@@ -166,6 +166,9 @@ pub struct SpatialRenderer {
+     /// without changing the downstream mix model again.
+     bed_routing_gains_buf: Vec<f32>,
+ 
++    /// Sample-accurate OAMD gain envelope for the channel currently rendered.
++    gain_envelope_scratch: Vec<f32>,
++
+     /// Per-speaker delay lines — one per speaker, fixed 100 ms capacity.
+     /// Owned exclusively by the render thread; no locking required.
+     delay_lines: Vec<crate::delay_line::DelayLine>,
+@@ -184,6 +187,9 @@ pub struct SpatialRenderer {
+     /// Scratch per-channel gains for the binaural path (reused).
+     binaural_gain_buf: Vec<f32>,
+ 
++    /// Sample-major, interleaved channel gain envelopes for the binaural path.
++    binaural_gain_envelope_buf: Vec<f32>,
++
+     /// Per-band VBAP engines.  Always has at least one entry (the "all speakers" band when
+     /// no crossover is configured).  Each engine returns full-size `Gains` (`num_speakers`).
+     render_bands: Vec<BandRenderer>,
+@@ -336,12 +342,12 @@ impl SpatialRenderer {
+                 .entry(event.channel_idx)
+                 .or_insert_with(ChannelState::default);
+ 
+-            if let Some(gain) = event.gain_db {
+-                state.gain_db = gain;
+-            }
+             if let Some(ramp_length) = event.ramp_length {
+                 state.ramp.ramp_length = ramp_length as u64;
+             }
++            if let Some(gain) = event.gain_db {
++                state.set_gain_db(gain, state.ramp.ramp_length);
++            }
+ 
+             // Beds are routed directly to speakers — no position state needed.
+             if event.is_bed {
+@@ -584,6 +590,9 @@ impl SpatialRenderer {
+                 .resize(input_channel_count, [0.0, 1.0, 0.0]);
+             self.binaural_gain_buf.clear();
+             self.binaural_gain_buf.resize(input_channel_count, 0.0);
++            self.binaural_gain_envelope_buf.clear();
++            self.binaural_gain_envelope_buf
++                .resize(sample_length * input_channel_count, 0.0);
+             let num_beds = bed_indices.len();
+             {
+                 let mut states = self.channel_states.lock();
+@@ -593,15 +602,22 @@ impl SpatialRenderer {
+                         Some(o) => o.gain,
+                         None => 1.0,
+                     };
+-                    // Stream metadata gain, same semantics as the VBAP path:
+-                    // silent (-128 = -inf dB) until the first metadata arrives.
+-                    let gain_db = states.get(&c).map(|s| s.gain_db).unwrap_or(-128);
+-                    let gain_linear = if gain_db == -128 {
+-                        0.0
+-                    } else {
+-                        10.0_f32.powf(gain_db as f32 / 20.0)
+-                    };
+-                    self.binaural_gain_buf[c] = obj_gain * gain_linear;
++                    // Stream gain ramps are sample-accurate in both speaker and
++                    // binaural modes. The scalar retains the final gain for
++                    // monitoring and legacy callers of the binaural component.
++                    if let Some(state) = states.get_mut(&c) {
++                        state.write_gain_envelope(
++                            &mut self.gain_envelope_scratch,
++                            sample_length,
++                            obj_gain,
++                        );
++                        for (sample_idx, &gain) in self.gain_envelope_scratch.iter().enumerate() {
++                            self.binaural_gain_envelope_buf[sample_idx * input_channel_count + c] =
++                                gain;
++                        }
++                        self.binaural_gain_buf[c] =
++                            self.gain_envelope_scratch.last().copied().unwrap_or(0.0);
++                    }
+                     // Same bed/object split as the VBAP path: a `usize::MAX`
+                     // sentinel in the bed map means "virtualize" (object), so it
+                     // takes the ramp branch even though it is within `num_beds`.
+@@ -650,13 +666,14 @@ impl SpatialRenderer {
+             let mut output = samples_buf;
+             output.clear();
+             output.resize(sample_length * 2, 0.0);
+-            self.binaural.render_frame(
++            self.binaural.render_frame_with_gain_envelope(
+                 input_pcm,
+                 input_channel_count,
+                 sample_length,
+                 &binaural_params,
+                 &self.binaural_pos_buf,
+                 &self.binaural_gain_buf,
++                &self.binaural_gain_envelope_buf,
+                 &mut output,
+             );
+             // Output gain parity with the speaker path: master gain × dialnorm
+@@ -750,18 +767,18 @@ impl SpatialRenderer {
+                 None => 1.0,
+             };
+ 
+-            // Get gain from cached metadata (common for ALL channels - beds and objects)
++            // Build the stream gain envelope once for this channel. OAMD ramp
++            // durations apply to gain as well as position/size.
+             let gain_db = channel_states
+                 .get(&input_channel_idx)
+-                .map(|s| s.gain_db)
++                .map(|state| state.gain_db)
+                 .unwrap_or(-128);
+-
+-            // Convert gain from dB to linear
+-            let gain_linear = if gain_db == -128 {
+-                0.0 // -inf dB
++            if let Some(state) = channel_states.get_mut(&input_channel_idx) {
++                state.write_gain_envelope(&mut self.gain_envelope_scratch, sample_length, obj_gain);
+             } else {
+-                10.0_f32.powf(gain_db as f32 / 20.0)
+-            };
++                self.gain_envelope_scratch.clear();
++                self.gain_envelope_scratch.resize(sample_length, 0.0);
++            }
+ 
+             // A channel is a bed when it has a bed-id entry that is not the
+             // `usize::MAX` "virtualize me" sentinel. Object-content beds list
+@@ -799,8 +816,7 @@ impl SpatialRenderer {
+                 // used for objects, but with a one-hot routing table.
+                 for sample_idx in 0..sample_length {
+                     let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
+-                        * gain_linear
+-                        * obj_gain;
++                        * self.gain_envelope_scratch[sample_idx];
+                     let out_base = sample_idx * self.num_speakers;
+                     for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
+                         output[out_base + speaker_idx] += sample * gain;
+@@ -900,8 +916,7 @@ impl SpatialRenderer {
+                                 &mut self.crossover_band_scratch,
+                                 |sample_idx| {
+                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
+-                                        * gain_linear
+-                                        * obj_gain
++                                        * self.gain_envelope_scratch[sample_idx]
+                                 },
+                             );
+                             crossover_elapsed += started_at.elapsed();
+@@ -918,8 +933,7 @@ impl SpatialRenderer {
+                             for sample_idx in 0..sample_length {
+                                 let raw = input_pcm
+                                     [sample_idx * input_channel_count + input_channel_idx]
+-                                    * gain_linear
+-                                    * obj_gain;
++                                    * self.gain_envelope_scratch[sample_idx];
+                                 let split = split_bands(
+                                     raw,
+                                     &self.crossover_filter_bank,
+@@ -963,8 +977,7 @@ impl SpatialRenderer {
+                                 &mut self.crossover_band_scratch,
+                                 |sample_idx| {
+                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
+-                                        * gain_linear
+-                                        * obj_gain
++                                        * self.gain_envelope_scratch[sample_idx]
+                                 },
+                             );
+                             crossover_elapsed += started_at.elapsed();
+@@ -981,8 +994,7 @@ impl SpatialRenderer {
+                             for sample_idx in 0..sample_length {
+                                 let raw = input_pcm
+                                     [sample_idx * input_channel_count + input_channel_idx]
+-                                    * gain_linear
+-                                    * obj_gain;
++                                    * self.gain_envelope_scratch[sample_idx];
+                                 let split = split_bands(
+                                     raw,
+                                     &self.crossover_filter_bank,
+@@ -1016,8 +1028,7 @@ impl SpatialRenderer {
+                                 &mut self.crossover_band_scratch,
+                                 |sample_idx| {
+                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
+-                                        * gain_linear
+-                                        * obj_gain
++                                        * self.gain_envelope_scratch[sample_idx]
+                                 },
+                             );
+                             crossover_elapsed += started_at.elapsed();
+@@ -1089,8 +1100,7 @@ impl SpatialRenderer {
+                                 }
+                                 let raw = input_pcm
+                                     [sample_idx * input_channel_count + input_channel_idx]
+-                                    * gain_linear
+-                                    * obj_gain;
++                                    * self.gain_envelope_scratch[sample_idx];
+                                 let split = split_bands(
+                                     raw,
+                                     &self.crossover_filter_bank,
+@@ -1153,8 +1163,7 @@ impl SpatialRenderer {
+                                 &mut self.crossover_band_scratch,
+                                 |sample_idx| {
+                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
+-                                        * gain_linear
+-                                        * obj_gain
++                                        * self.gain_envelope_scratch[sample_idx]
+                                 },
+                             );
+                             crossover_elapsed += started_at.elapsed();
+@@ -1189,8 +1198,7 @@ impl SpatialRenderer {
+                                 }
+                                 let raw = input_pcm
+                                     [sample_idx * input_channel_count + input_channel_idx]
+-                                    * gain_linear
+-                                    * obj_gain;
++                                    * self.gain_envelope_scratch[sample_idx];
+                                 let split = split_bands(
+                                     raw,
+                                     &self.crossover_filter_bank,

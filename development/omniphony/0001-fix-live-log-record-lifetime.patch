@@ -1,0 +1,27 @@
+warning: in the working copy of 'omniphony-renderer/sys/src/live_log.rs', LF will be replaced by CRLF the next time Git touches it
+diff --git a/omniphony-renderer/sys/src/live_log.rs b/omniphony-renderer/sys/src/live_log.rs
+index 07da22221c5c3bc2c63ee5bbb0bb8f8b97af7207..6d4706d825a1952b9f8a8c8c9fcf6cccd379f554 100644
+--- a/omniphony-renderer/sys/src/live_log.rs
++++ b/omniphony-renderer/sys/src/live_log.rs
+@@ -75,13 +75,13 @@ impl DynamicLogger {
+ 
+     fn emit_external_record(&self, level: Level, target: &str, message: &str) {
+         if self.accepts(level) {
+-            let args = format_args!("{message}");
+-            let record = Record::builder()
+-                .args(args)
+-                .level(level)
+-                .target(target)
+-                .build();
+-            self.inner.log(&record);
++            self.inner.log(
++                &Record::builder()
++                    .args(format_args!("{message}"))
++                    .level(level)
++                    .target(target)
++                    .build(),
++            );
+         }
+         self.push_external_record(level, target, message);
+     }
+

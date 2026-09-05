@@ -1,0 +1,1226 @@
+warning: in the working copy of 'eac3/src/eac3dec/metadata.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/eac3dec/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/eac3dec/pcm.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'eac3/src/lib.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/eac3_pipeline.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/metadata.rs', LF will be replaced by CRLF the next time Git touches it
+diff --git a/eac3/src/eac3dec/metadata.rs b/eac3/src/eac3dec/metadata.rs
+index 7f42b83..6bce379 100644
+--- a/eac3/src/eac3dec/metadata.rs
++++ b/eac3/src/eac3dec/metadata.rs
+@@ -67,6 +67,9 @@ pub struct OamdPayload {
+     pub isf_index: Option<u8>,
+     pub bed_assignment: Vec<Vec<BedChannel>>,
+     pub elements: Vec<OamdElement>,
++    /// Effective trim metadata. Trim elements may be sent sparsely, so the
++    /// parser state carries the most recently transmitted value forward.
++    pub trim: Option<OamdTrimElement>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq)]
+@@ -80,6 +83,29 @@ pub struct OamdElement {
+ pub enum OamdElementKind {
+     Unknown,
+     Object(OamdObjectElement),
++    Trim(OamdTrimElement),
++}
++
++pub const OAMD_TRIM_CONFIGS: usize = 9;
++
++#[derive(Debug, Clone, PartialEq)]
++pub struct OamdTrimElement {
++    pub warp_mode: u8,
++    pub reserved: u8,
++    pub global_trim_mode: u8,
++    pub trims: [Option<OamdTrim>; OAMD_TRIM_CONFIGS],
++    pub disable_trim_per_object: Vec<bool>,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct OamdTrim {
++    pub default_trim: bool,
++    pub disable_trim: bool,
++    pub centre_db: Option<f32>,
++    pub surround_db: Option<f32>,
++    pub height_db: Option<f32>,
++    pub balance_y_top_bottom: Option<f32>,
++    pub balance_y_listener: Option<f32>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq)]
+@@ -103,7 +129,11 @@ pub struct OamdObjectBlock {
+     pub render_info_status: u8,
+     pub render_info_blocks: Option<u8>,
+     pub anchor: ObjectAnchor,
+-    pub gain: Option<f32>,
++    /// Object gain in dB. `-128` represents negative infinity (mute).
++    pub gain: Option<i8>,
++    /// The coded gain index requested the previous object's gain in the same
++    /// metadata update block. Resolved before this block leaves the parser.
++    pub gain_from_previous_object: bool,
+     pub priority: Option<u8>,
+     pub valid_position: bool,
+     pub differential_position: bool,
+@@ -205,6 +235,7 @@ impl MetadataParseState {
+ #[derive(Debug, Clone, Default)]
+ struct OamdPayloadParseState {
+     elements: Vec<OamdElementParseState>,
++    trim: Option<OamdTrimElement>,
+ }
+ 
+ #[derive(Debug, Clone, Default)]
+@@ -214,13 +245,13 @@ struct OamdElementParseState {
+ 
+ #[derive(Debug, Clone, Default)]
+ struct OamdObjectElementParseState {
+-    object_blocks: Vec<Vec<OamdObjectBlockParseState>>,
++    objects: Vec<OamdObjectBlockParseState>,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ struct OamdObjectBlockParseState {
+     anchor: ObjectAnchor,
+-    gain: Option<f32>,
++    gain: Option<i8>,
+     priority: Option<u8>,
+     valid_position: bool,
+     differential_position: bool,
+@@ -278,7 +309,11 @@ impl OamdPayloadParseState {
+                 payload.object_count,
+                 payload.bed_or_isf_objects,
+             );
++            if let OamdElementKind::Trim(trim) = &element.kind {
++                self.trim = Some(trim.clone());
++            }
+         }
++        payload.trim = self.trim.clone();
+     }
+ }
+ 
+@@ -293,17 +328,13 @@ impl OamdElementParseState {
+             return;
+         };
+ 
+-        let block_count = object_element.block_updates.len();
+-        let needs_reset = self.object.as_ref().is_none_or(|state| {
+-            state.object_blocks.len() != object_count
+-                || state.object_blocks.first().map(Vec::len).unwrap_or(0) != block_count
+-        });
++        let needs_reset = self
++            .object
++            .as_ref()
++            .is_none_or(|state| state.objects.len() != object_count);
+         if needs_reset {
+             self.object = Some(OamdObjectElementParseState {
+-                object_blocks: vec![
+-                    vec![OamdObjectBlockParseState::default(); block_count];
+-                    object_count
+-                ],
++                objects: vec![OamdObjectBlockParseState::default(); object_count],
+             });
+         }
+ 
+@@ -319,32 +350,51 @@ impl OamdObjectElementParseState {
+         element: &mut OamdObjectElement,
+         bed_or_isf_objects: usize,
+     ) {
+-        for (object_index, blocks) in element.object_blocks.iter_mut().enumerate() {
+-            for (block_index, block) in blocks.iter_mut().enumerate() {
+-                self.object_blocks[object_index][block_index]
+-                    .resolve_block(block, object_index < bed_or_isf_objects);
++        // The bitstream is object-major, but state evolves in temporal update
++        // order. A single state per object therefore crosses both block and
++        // frame boundaries, including when the block count changes.
++        for block_index in 0..element.block_updates.len() {
++            let mut previous_object_gain = 0i8;
++            for (object_index, blocks) in element.object_blocks.iter_mut().enumerate() {
++                if let Some(block) = blocks.get_mut(block_index) {
++                    previous_object_gain = self.objects[object_index].resolve_block(
++                        block,
++                        object_index < bed_or_isf_objects,
++                        previous_object_gain,
++                    );
++                }
+             }
+         }
+     }
+ }
+ 
+ impl OamdObjectBlockParseState {
+-    fn resolve_block(&mut self, parsed: &mut OamdObjectBlock, bed_or_isf_object: bool) {
++    fn resolve_block(
++        &mut self,
++        parsed: &mut OamdObjectBlock,
++        bed_or_isf_object: bool,
++        previous_object_gain: i8,
++    ) -> i8 {
+         let inactive = parsed.inactive;
+         let basic_info_status = if inactive {
+             0
+         } else {
+             parsed.basic_info_status
+         };
+-        if (basic_info_status & 1) != 0 {
++        if basic_info_status == 0 {
++            self.gain = Some(-128);
++            self.priority = Some(0);
++        } else if (basic_info_status & 1) != 0 {
+             let blocks = parsed
+                 .basic_info_blocks
+                 .unwrap_or(if basic_info_status == 1 { 3 } else { 0 });
+ 
+-            if (blocks & 2) != 0
+-                && let Some(gain) = parsed.gain
+-            {
+-                self.gain = Some(gain);
++            if (blocks & 2) != 0 {
++                self.gain = Some(if parsed.gain_from_previous_object {
++                    previous_object_gain
++                } else {
++                    parsed.gain.unwrap_or(0)
++                });
+             }
+ 
+             if (blocks & 1) != 0 && parsed.priority.is_some() {
+@@ -357,17 +407,41 @@ impl OamdObjectBlockParseState {
+         } else {
+             parsed.render_info_status
+         };
+-        if (render_info_status & 1) != 0 {
++        if render_info_status == 0 && !bed_or_isf_object {
++            self.anchor = ObjectAnchor::Room;
++            self.valid_position = true;
++            self.differential_position = false;
++            self.position = Some(Vec3 {
++                x: 0.5,
++                y: 0.5,
++                z: 0.0,
++            });
++            self.distance = None;
++            self.size = Some([0.0; 3]);
++            self.screen_factor = None;
++            self.depth_factor = None;
++        } else if (render_info_status & 1) != 0 {
+             let blocks = parsed
+                 .render_info_blocks
+                 .unwrap_or(if render_info_status == 1 { 15 } else { 0 });
+ 
+-            self.valid_position = (blocks & 1) != 0;
+-            if self.valid_position {
+-                self.differential_position = parsed.differential_position;
+-                if let Some(position) = parsed.position {
+-                    self.position = Some(position);
++            if (blocks & 1) != 0 {
++                self.valid_position = parsed.valid_position;
++                if let Some(mut position) = parsed.position {
++                    if parsed.differential_position {
++                        if let Some(previous) = self.position {
++                            position.x = (previous.x + position.x).clamp(0.0, 1.0);
++                            position.y = (previous.y + position.y).clamp(0.0, 1.0);
++                            position.z = (previous.z + position.z).clamp(-1.0, 1.0);
++                        } else {
++                            self.valid_position = false;
++                        }
++                    }
++                    if self.valid_position {
++                        self.position = Some(position);
++                    }
+                 }
++                self.differential_position = false;
+                 self.distance = parsed.distance;
+             }
+ 
+@@ -377,10 +451,15 @@ impl OamdObjectBlockParseState {
+                 self.size = Some(size);
+             }
+ 
+-            if (blocks & 8) != 0 && parsed.anchor == ObjectAnchor::Screen {
+-                self.anchor = ObjectAnchor::Screen;
+-                self.screen_factor = parsed.screen_factor;
+-                self.depth_factor = parsed.depth_factor;
++            if (blocks & 8) != 0 {
++                self.anchor = parsed.anchor;
++                if parsed.anchor == ObjectAnchor::Screen {
++                    self.screen_factor = parsed.screen_factor;
++                    self.depth_factor = parsed.depth_factor;
++                } else {
++                    self.screen_factor = None;
++                    self.depth_factor = None;
++                }
+             }
+         }
+ 
+@@ -398,6 +477,13 @@ impl OamdObjectBlockParseState {
+         parsed.size = self.size;
+         parsed.screen_factor = self.screen_factor;
+         parsed.depth_factor = self.depth_factor;
++        if inactive {
++            parsed.gain = Some(-128);
++            parsed.valid_position = false;
++            parsed.position = None;
++        }
++        parsed.gain_from_previous_object = false;
++        parsed.gain.unwrap_or(0)
+     }
+ }
+ 
+@@ -513,6 +599,7 @@ fn parse_oamd_payload(reader: &mut BitReader<'_>) -> Result<OamdPayload, ParseEr
+         isf_index,
+         bed_assignment,
+         elements,
++        trim: None,
+     })
+ }
+ 
+@@ -612,14 +699,14 @@ fn parse_oamd_element(
+     let skip = if alternate_object_present { 5 } else { 1 };
+     skip_bits(reader, skip, "oa_alternate_object_info")?;
+ 
+-    let kind = if element_index == 1 {
+-        OamdElementKind::Object(parse_oamd_object_element(
++    let kind = match element_index {
++        1 => OamdElementKind::Object(parse_oamd_object_element(
+             reader,
+             object_count,
+             bed_or_isf_objects,
+-        )?)
+-    } else {
+-        OamdElementKind::Unknown
++        )?),
++        2 => OamdElementKind::Trim(parse_oamd_trim_element(reader, object_count)?),
++        _ => OamdElementKind::Unknown,
+     };
+     if reader.position() > end_pos {
+         emit_metadata_debug(format_args!(
+@@ -673,6 +760,93 @@ fn parse_oamd_object_element(
+     })
+ }
+ 
++fn parse_oamd_trim_element(
++    reader: &mut BitReader<'_>,
++    object_count: usize,
++) -> Result<OamdTrimElement, ParseError> {
++    const TRIM_DB: [f32; 16] = [
++        6.0, 3.0, 1.5, 0.75, -0.75, -1.5, -3.0, -4.5, -6.0, -7.5, -9.0, -10.5, -12.0, -13.5, -16.0,
++        -36.0,
++    ];
++
++    let warp_mode = read_bits(reader, 2, "warp_mode")? as u8;
++    let reserved = read_bits(reader, 2, "trim_reserved")? as u8;
++    let global_trim_mode = read_bits(reader, 2, "global_trim_mode")? as u8;
++    let mut trims = [None; OAMD_TRIM_CONFIGS];
++
++    if global_trim_mode == 2 {
++        for trim in &mut trims {
++            let default_trim = read_bit(reader, "b_default_trim")?;
++            let mut decoded = OamdTrim {
++                default_trim,
++                disable_trim: false,
++                centre_db: None,
++                surround_db: None,
++                height_db: None,
++                balance_y_top_bottom: None,
++                balance_y_listener: None,
++            };
++            if !default_trim {
++                decoded.disable_trim = read_bit(reader, "b_disable_trim")?;
++                if !decoded.disable_trim {
++                    let presence = read_bits(reader, 5, "trim_balance_presence")? as u8;
++                    if (presence & 0x10) != 0 {
++                        decoded.centre_db =
++                            Some(TRIM_DB[read_bits(reader, 4, "trim_centre")? as usize]);
++                    }
++                    if (presence & 0x08) != 0 {
++                        decoded.surround_db =
++                            Some(TRIM_DB[read_bits(reader, 4, "trim_surround")? as usize]);
++                    }
++                    if (presence & 0x04) != 0 {
++                        decoded.height_db =
++                            Some(TRIM_DB[read_bits(reader, 4, "trim_height")? as usize]);
++                    }
++                    if (presence & 0x02) != 0 {
++                        let sign = if read_bit(reader, "balance_y_tb_sign")? {
++                            1.0
++                        } else {
++                            -1.0
++                        };
++                        decoded.balance_y_top_bottom = Some(
++                            (read_bits(reader, 4, "balance_y_tb_amount")? as f32 + 1.0)
++                                * (sign / 16.0),
++                        );
++                    }
++                    if (presence & 0x01) != 0 {
++                        let sign = if read_bit(reader, "balance_y_listener_sign")? {
++                            1.0
++                        } else {
++                            -1.0
++                        };
++                        decoded.balance_y_listener = Some(
++                            (read_bits(reader, 4, "balance_y_listener_amount")? as f32 + 1.0)
++                                * (sign / 16.0),
++                        );
++                    }
++                }
++            }
++            *trim = Some(decoded);
++        }
++    }
++
++    let mut disable_trim_per_object = Vec::new();
++    if read_bit(reader, "b_disable_trim_per_obj")? {
++        disable_trim_per_object.reserve(object_count);
++        for _ in 0..object_count {
++            disable_trim_per_object.push(read_bit(reader, "b_disable_trim")?);
++        }
++    }
++
++    Ok(OamdTrimElement {
++        warp_mode,
++        reserved,
++        global_trim_mode,
++        trims,
++        disable_trim_per_object,
++    })
++}
++
+ fn parse_md_update_info(
+     reader: &mut BitReader<'_>,
+ ) -> Result<(u8, Vec<OamdBlockUpdate>), ParseError> {
+@@ -686,7 +860,8 @@ fn parse_md_update_info(
+     let blocks = read_bits(reader, 3, "num_obj_info_blocks")? as usize + 1;
+     let mut updates = Vec::with_capacity(blocks);
+     for _ in 0..blocks {
+-        let offset = read_bits(reader, 6, "block_offset_factor")? as i16 + sample_offset as i16;
++        let block_offset_factor = read_bits(reader, 6, "block_offset_factor")? as i16;
++        let offset = sample_offset as i16 + 32 * block_offset_factor;
+         let ramp_duration = match read_bits(reader, 2, "ramp_duration_code")? {
+             code @ 0..=2 => RAMP_DURATIONS[code as usize],
+             _ => {
+@@ -727,6 +902,7 @@ fn parse_oamd_object_block(
+ 
+     let mut basic_info_blocks = None;
+     let mut gain = None;
++    let mut gain_from_previous_object = false;
+     let mut priority = None;
+     if (basic_info_status & 1) != 0 {
+         let blocks = if basic_info_status == 1 {
+@@ -739,8 +915,8 @@ fn parse_oamd_object_block(
+         if (blocks & 2) != 0 {
+             let gain_code = read_bits(reader, 2, "oa_gain_helper")?;
+             gain = match gain_code {
+-                0 => Some(0.707),
+-                1 => Some(0.0),
++                0 => Some(0),
++                1 => Some(-128),
+                 2 => {
+                     let gain_step = read_bits(reader, 6, "oa_gain_step")? as i32;
+                     let gain_db = if gain_step < 15 {
+@@ -748,14 +924,21 @@ fn parse_oamd_object_block(
+                     } else {
+                         14 - gain_step
+                     };
+-                    Some(db_to_gain(gain_db as f32) * 0.707)
++                    Some(gain_db as i8)
++                }
++                _ => {
++                    gain_from_previous_object = true;
++                    None
+                 }
+-                _ => None,
+             };
+         }
+ 
+-        if (blocks & 1) != 0 && !read_bit(reader, "oa_default_priority")? {
+-            priority = Some(read_bits(reader, 5, "oa_priority")? as u8);
++        if (blocks & 1) != 0 {
++            priority = Some(if read_bit(reader, "oa_default_priority")? {
++                32
++            } else {
++                read_bits(reader, 5, "oa_priority")? as u8
++            });
+         }
+     }
+ 
+@@ -884,6 +1067,7 @@ fn parse_oamd_object_block(
+         render_info_blocks,
+         anchor,
+         gain,
++        gain_from_previous_object,
+         priority,
+         valid_position,
+         differential_position,
+@@ -1238,10 +1422,6 @@ fn read_bit_vec(reader: &mut BitReader<'_>, bits: usize) -> Result<Vec<bool>, Pa
+     Ok(result)
+ }
+ 
+-fn db_to_gain(db: f32) -> f32 {
+-    10f32.powf(db / 20.0)
+-}
+-
+ const BED_CHANNELS: [BedChannel; 17] = [
+     BedChannel::FrontLeft,
+     BedChannel::FrontRight,
+@@ -1285,6 +1465,7 @@ impl Default for OamdObjectBlock {
+             render_info_blocks: None,
+             anchor: ObjectAnchor::Room,
+             gain: None,
++            gain_from_previous_object: false,
+             priority: None,
+             valid_position: false,
+             differential_position: false,
+@@ -1922,6 +2103,7 @@ mod tests {
+                     object_blocks,
+                 }),
+             }],
++            trim: None,
+         }
+     }
+ 
+@@ -1932,6 +2114,33 @@ mod tests {
+         &object.object_blocks[0][1]
+     }
+ 
++    fn full_update(
++        position: Vec3,
++        gain: i8,
++        priority: u8,
++        size: [f32; 3],
++        screen_factor: f32,
++        depth_factor: f32,
++        distance: f32,
++    ) -> OamdObjectBlock {
++        OamdObjectBlock {
++            basic_info_status: 1,
++            basic_info_blocks: Some(3),
++            render_info_status: 1,
++            render_info_blocks: Some(15),
++            anchor: ObjectAnchor::Screen,
++            gain: Some(gain),
++            priority: Some(priority),
++            valid_position: true,
++            position: Some(position),
++            distance: Some(distance),
++            size: Some(size),
++            screen_factor: Some(screen_factor),
++            depth_factor: Some(depth_factor),
++            ..OamdObjectBlock::default()
++        }
++    }
++
+     #[test]
+     fn oamd_state_reuses_omitted_fields_across_frames() {
+         let position = Vec3 {
+@@ -1940,14 +2149,14 @@ mod tests {
+             z: -0.25,
+         };
+         let mut initial = payload_with_object_blocks(vec![vec![
+-            OamdObjectBlock::default(),
++            full_update(position, -6, 7, [0.25; 3], 0.5, 2.0, 4.0),
+             OamdObjectBlock {
+                 basic_info_status: 3,
+                 basic_info_blocks: Some(3),
+                 render_info_status: 3,
+                 render_info_blocks: Some(13),
+                 anchor: ObjectAnchor::Screen,
+-                gain: Some(0.5),
++                gain: Some(-6),
+                 priority: Some(7),
+                 valid_position: true,
+                 differential_position: false,
+@@ -1960,10 +2169,10 @@ mod tests {
+             },
+         ]]);
+         let mut omitted = payload_with_object_blocks(vec![vec![
+-            OamdObjectBlock::default(),
++            full_update(position, -6, 7, [0.25; 3], 0.5, 2.0, 4.0),
+             OamdObjectBlock {
+-                basic_info_status: 0,
+-                render_info_status: 0,
++                basic_info_status: 2,
++                render_info_status: 2,
+                 ..OamdObjectBlock::default()
+             },
+         ]]);
+@@ -1974,7 +2183,7 @@ mod tests {
+ 
+         let resolved = second_block(&omitted);
+         assert_eq!(resolved.anchor, ObjectAnchor::Screen);
+-        assert_eq!(resolved.gain, Some(0.5));
++        assert_eq!(resolved.gain, Some(-6));
+         assert_eq!(resolved.priority, Some(7));
+         assert!(resolved.valid_position);
+         assert!(!resolved.differential_position);
+@@ -1986,24 +2195,24 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn oamd_state_clears_valid_position_when_render_info_excludes_position() {
++    fn oamd_state_preserves_position_when_mixed_update_excludes_position() {
+         let position = Vec3 {
+             x: 0.75,
+             y: 0.125,
+             z: 0.5,
+         };
+         let mut first = payload_with_object_blocks(vec![vec![
+-            OamdObjectBlock::default(),
++            full_update(position, -2, 3, [0.4; 3], 0.625, 0.5, 3.2),
+             OamdObjectBlock {
+                 basic_info_status: 3,
+                 basic_info_blocks: Some(3),
+                 render_info_status: 3,
+                 render_info_blocks: Some(13),
+                 anchor: ObjectAnchor::Screen,
+-                gain: Some(0.8),
++                gain: Some(-2),
+                 priority: Some(3),
+                 valid_position: true,
+-                differential_position: true,
++                differential_position: false,
+                 position: Some(position),
+                 distance: Some(3.2),
+                 size: Some([0.4, 0.4, 0.4]),
+@@ -2013,9 +2222,9 @@ mod tests {
+             },
+         ]]);
+         let mut second = payload_with_object_blocks(vec![vec![
+-            OamdObjectBlock::default(),
++            full_update(position, -2, 3, [0.4; 3], 0.625, 0.5, 3.2),
+             OamdObjectBlock {
+-                basic_info_status: 0,
++                basic_info_status: 2,
+                 render_info_status: 3,
+                 render_info_blocks: Some(4),
+                 size: Some([0.75, 0.75, 0.75]),
+@@ -2029,14 +2238,139 @@ mod tests {
+ 
+         let resolved = second_block(&second);
+         assert_eq!(resolved.anchor, ObjectAnchor::Screen);
+-        assert_eq!(resolved.gain, Some(0.8));
++        assert_eq!(resolved.gain, Some(-2));
+         assert_eq!(resolved.priority, Some(3));
+-        assert!(!resolved.valid_position);
+-        assert!(resolved.differential_position);
++        assert!(resolved.valid_position);
++        assert!(!resolved.differential_position);
+         assert_eq!(resolved.position, Some(position));
+         assert_eq!(resolved.distance, Some(3.2));
+         assert_eq!(resolved.size, Some([0.75, 0.75, 0.75]));
+         assert_eq!(resolved.screen_factor, Some(0.625));
+         assert_eq!(resolved.depth_factor, Some(0.5));
+     }
++
++    #[test]
++    fn trim_element_decodes_warp_mode() {
++        // 01 warp, 00 reserved, 00 global default, 0 no per-object override.
++        let mut reader = BitReader::new(&[0x40]);
++        let trim = parse_oamd_trim_element(&mut reader, 16).expect("trim");
++        assert_eq!(trim.warp_mode, 1);
++        assert_eq!(trim.global_trim_mode, 0);
++        assert!(trim.disable_trim_per_object.is_empty());
++    }
++
++    #[test]
++    fn metadata_update_offset_scales_factor_by_32() {
++        // sample_offset=0, one block, block_offset_factor=3, ramp=0.
++        let mut reader = BitReader::new(&[0x00, 0x60]);
++        let (sample_offset, updates) = parse_md_update_info(&mut reader).expect("update info");
++        assert_eq!(sample_offset, 0);
++        assert_eq!(updates[0].offset, 96);
++    }
++
++    #[test]
++    fn differential_position_accumulates_in_temporal_order() {
++        let first = full_update(
++            Vec3 {
++                x: 0.5,
++                y: 0.5,
++                z: 0.0,
++            },
++            0,
++            32,
++            [0.0; 3],
++            1.0,
++            1.0,
++            1.0,
++        );
++        let delta = OamdObjectBlock {
++            basic_info_status: 2,
++            render_info_status: 3,
++            render_info_blocks: Some(1),
++            valid_position: true,
++            differential_position: true,
++            position: Some(Vec3 {
++                x: 2.0 * XY_SCALE,
++                y: -3.0 * XY_SCALE,
++                z: 1.0 * Z_SCALE,
++            }),
++            ..OamdObjectBlock::default()
++        };
++        let mut payload = payload_with_object_blocks(vec![vec![first, delta]]);
++        MetadataParseState::default()
++            .oamd
++            .resolve_payload(&mut payload);
++
++        let resolved = second_block(&payload);
++        let position = resolved.position.expect("resolved position");
++        assert!((position.x - (0.5 + 2.0 * XY_SCALE)).abs() < 1e-6);
++        assert!((position.y - (0.5 - 3.0 * XY_SCALE)).abs() < 1e-6);
++        assert!((position.z - Z_SCALE).abs() < 1e-6);
++        assert!(!resolved.differential_position);
++    }
++
++    #[test]
++    fn gain_index_three_reuses_previous_object_in_same_update() {
++        let first = OamdObjectBlock {
++            basic_info_status: 1,
++            basic_info_blocks: Some(3),
++            gain: Some(-9),
++            priority: Some(32),
++            render_info_status: 0,
++            ..OamdObjectBlock::default()
++        };
++        let second = OamdObjectBlock {
++            basic_info_status: 1,
++            basic_info_blocks: Some(3),
++            gain_from_previous_object: true,
++            priority: Some(32),
++            render_info_status: 0,
++            ..OamdObjectBlock::default()
++        };
++        let mut payload = payload_with_object_blocks(vec![vec![first], vec![second]]);
++        MetadataParseState::default()
++            .oamd
++            .resolve_payload(&mut payload);
++        let OamdElementKind::Object(object) = &payload.elements[0].kind else {
++            panic!("expected object element");
++        };
++        assert_eq!(object.object_blocks[0][0].gain, Some(-9));
++        assert_eq!(object.object_blocks[1][0].gain, Some(-9));
++    }
++
++    #[test]
++    fn status_zero_restores_normative_defaults() {
++        let mut payload = payload_with_object_blocks(vec![vec![
++            full_update(
++                Vec3 {
++                    x: 0.25,
++                    y: 0.75,
++                    z: 0.5,
++                },
++                -3,
++                10,
++                [0.5; 3],
++                0.5,
++                0.5,
++                2.0,
++            ),
++            OamdObjectBlock::default(),
++        ]]);
++        MetadataParseState::default()
++            .oamd
++            .resolve_payload(&mut payload);
++        let resolved = second_block(&payload);
++        assert_eq!(resolved.gain, Some(-128));
++        assert_eq!(resolved.priority, Some(0));
++        assert_eq!(resolved.anchor, ObjectAnchor::Room);
++        assert_eq!(
++            resolved.position,
++            Some(Vec3 {
++                x: 0.5,
++                y: 0.5,
++                z: 0.0
++            })
++        );
++        assert_eq!(resolved.size, Some([0.0; 3]));
++    }
+ }
+diff --git a/eac3/src/eac3dec/mod.rs b/eac3/src/eac3dec/mod.rs
+index ba32f9b..fb0cbcd 100644
+--- a/eac3/src/eac3dec/mod.rs
++++ b/eac3/src/eac3dec/mod.rs
+@@ -13,8 +13,9 @@ mod syncframe;
+ pub use decoder::{Decoder, PushResult};
+ pub use joc::JOC_QMF_DELAY_SAMPLES;
+ pub use metadata::{
+-    JocObject, JocObjectData, JocPayload, OamdBlockUpdate, OamdElement, OamdElementKind,
+-    OamdObjectBlock, OamdObjectElement, OamdPayload, ParsedEmdfPayloadData, ParsedEmdfPayloadKind,
++    JocObject, JocObjectData, JocPayload, OAMD_TRIM_CONFIGS, OamdBlockUpdate, OamdElement,
++    OamdElementKind, OamdObjectBlock, OamdObjectElement, OamdPayload, OamdTrim, OamdTrimElement,
++    ParsedEmdfPayloadData, ParsedEmdfPayloadKind,
+ };
+ pub use pcm::{
+     CorePcmFrame, ObjectPcmDecoder, ObjectPcmFrame, ObjectPcmPushResult, PcmDecoder, PcmPushResult,
+diff --git a/eac3/src/eac3dec/pcm.rs b/eac3/src/eac3dec/pcm.rs
+index 339a0b6..b53e7a9 100644
+--- a/eac3/src/eac3dec/pcm.rs
++++ b/eac3/src/eac3dec/pcm.rs
+@@ -214,6 +214,7 @@ pub struct ObjectPcmDecoder {
+     core_state: CoreDecodeState,
+     joc_state: JocObjectDecoderState,
+     metadata_state: MetadataParseState,
++    previous_joc_sequence: Option<u16>,
+     debug_log_level: log::Level,
+ }
+ 
+@@ -225,6 +226,7 @@ impl Default for ObjectPcmDecoder {
+             core_state: CoreDecodeState::default(),
+             joc_state: JocObjectDecoderState::default(),
+             metadata_state: MetadataParseState::default(),
++            previous_joc_sequence: None,
+             debug_log_level: log::Level::Debug,
+         }
+     }
+@@ -243,6 +245,7 @@ impl ObjectPcmDecoder {
+         self.core_state.reset();
+         self.joc_state.reset();
+         self.metadata_state.reset();
++        self.previous_joc_sequence = None;
+     }
+ 
+     /// Number of access units accepted since the last reset.
+@@ -276,7 +279,7 @@ impl ObjectPcmDecoder {
+         access_unit: &[u8],
+     ) -> Result<Option<ObjectPcmPushResult>, ParseError> {
+         self.apply_debug_log_level();
+-        let info = inspect_access_unit_with_metadata_state(
++        let mut info = inspect_access_unit_with_metadata_state(
+             access_unit,
+             &mut self.metadata_state,
+             Some(&mut self.aux_state),
+@@ -299,10 +302,28 @@ impl ObjectPcmDecoder {
+             ParsedEmdfPayloadData::Joc(joc) => Some(joc.clone()),
+             _ => None,
+         });
+-        let Some(joc) = joc else {
++        let Some(mut joc) = joc else {
++            self.reset_joc_stream_state();
+             return Ok(None);
+         };
+ 
++        if joc_sequence_discontinuous(self.previous_joc_sequence, joc.sequence_counter) {
++            self.reset_joc_stream_state();
++            info = inspect_access_unit_with_metadata_state(
++                access_unit,
++                &mut self.metadata_state,
++                Some(&mut self.aux_state),
++            )?;
++            joc = info
++                .payloads()
++                .find_map(|payload| match &payload.parsed {
++                    ParsedEmdfPayloadData::Joc(joc) => Some(joc.clone()),
++                    _ => None,
++                })
++                .ok_or(ParseError::InvalidHeader("joc-after-discontinuity"))?;
++        }
++        self.previous_joc_sequence = Some(joc.sequence_counter);
++
+         let mut core = decode_core_pcm_frame_with_state(access_unit, &info, &mut self.core_state)?;
+         let object_channels = self.joc_state.decode_frame(&core, &joc)?;
+         self.joc_state.align_bypassed_lfe(core.lfe_channel.as_mut());
+@@ -338,7 +359,7 @@ impl ObjectPcmDecoder {
+         mut core: CorePcmFrame,
+     ) -> Result<Option<ObjectPcmPushResult>, ParseError> {
+         self.apply_debug_log_level();
+-        let info = inspect_access_unit_with_metadata_state(
++        let mut info = inspect_access_unit_with_metadata_state(
+             access_unit,
+             &mut self.metadata_state,
+             Some(&mut self.aux_state),
+@@ -361,10 +382,28 @@ impl ObjectPcmDecoder {
+             ParsedEmdfPayloadData::Joc(joc) => Some(joc.clone()),
+             _ => None,
+         });
+-        let Some(joc) = joc else {
++        let Some(mut joc) = joc else {
++            self.reset_joc_stream_state();
+             return Ok(None);
+         };
+ 
++        if joc_sequence_discontinuous(self.previous_joc_sequence, joc.sequence_counter) {
++            self.reset_joc_stream_state();
++            info = inspect_access_unit_with_metadata_state(
++                access_unit,
++                &mut self.metadata_state,
++                Some(&mut self.aux_state),
++            )?;
++            joc = info
++                .payloads()
++                .find_map(|payload| match &payload.parsed {
++                    ParsedEmdfPayloadData::Joc(joc) => Some(joc.clone()),
++                    _ => None,
++                })
++                .ok_or(ParseError::InvalidHeader("joc-after-discontinuity"))?;
++        }
++        self.previous_joc_sequence = Some(joc.sequence_counter);
++
+         let object_channels = self.joc_state.decode_frame(&core, &joc)?;
+         self.joc_state.align_bypassed_lfe(core.lfe_channel.as_mut());
+         let object_active = joc.objects.iter().map(|object| object.active).collect();
+@@ -391,4 +430,40 @@ impl ObjectPcmDecoder {
+             },
+         }))
+     }
++
++    fn reset_joc_stream_state(&mut self) {
++        self.aux_state.reset();
++        self.core_state.reset();
++        self.joc_state.reset();
++        self.metadata_state.reset();
++        self.previous_joc_sequence = None;
++    }
++}
++
++fn joc_sequence_discontinuous(previous: Option<u16>, current: u16) -> bool {
++    if current == 0 {
++        return true;
++    }
++    previous.is_some_and(|previous| {
++        let expected = if previous == 1023 { 1 } else { previous + 1 };
++        current != expected
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::joc_sequence_discontinuous;
++
++    #[test]
++    fn joc_sequence_accepts_initial_and_consecutive_values() {
++        assert!(!joc_sequence_discontinuous(None, 1));
++        assert!(!joc_sequence_discontinuous(Some(1), 2));
++        assert!(!joc_sequence_discontinuous(Some(1023), 1));
++    }
++
++    #[test]
++    fn joc_sequence_rejects_splice_marker_and_gaps() {
++        assert!(joc_sequence_discontinuous(Some(4), 0));
++        assert!(joc_sequence_discontinuous(Some(4), 6));
++    }
+ }
+diff --git a/eac3/src/lib.rs b/eac3/src/lib.rs
+index 5520b87..e9666a3 100644
+--- a/eac3/src/lib.rs
++++ b/eac3/src/lib.rs
+@@ -8,10 +8,11 @@ mod types;
+ pub use eac3dec::{
+     AccessUnitInfo, AudioFrameInfo, AuxParseStatus, BlockDrcInfo, CorePcmFrame, Decoder,
+     EmdfBlockInfo, EmdfPayloadInfo, EmdfSource, FrameType, JOC_QMF_DELAY_SAMPLES, JocObject,
+-    JocObjectData, JocPayload, OamdBlockUpdate, OamdElement, OamdElementKind, OamdObjectBlock,
+-    OamdObjectElement, OamdPayload, ObjectPcmDecoder, ObjectPcmFrame, ObjectPcmPushResult,
+-    ParseError as AccessUnitParseError, ParsedEmdfPayloadData, ParsedEmdfPayloadKind, PayloadInfo,
+-    PcmDecoder, PcmPushResult, PushResult, SkipFieldInfo, inspect_access_unit,
++    JocObjectData, JocPayload, OAMD_TRIM_CONFIGS, OamdBlockUpdate, OamdElement, OamdElementKind,
++    OamdObjectBlock, OamdObjectElement, OamdPayload, OamdTrim, OamdTrimElement, ObjectPcmDecoder,
++    ObjectPcmFrame, ObjectPcmPushResult, ParseError as AccessUnitParseError, ParsedEmdfPayloadData,
++    ParsedEmdfPayloadKind, PayloadInfo, PcmDecoder, PcmPushResult, PushResult, SkipFieldInfo,
++    inspect_access_unit,
+ };
+ pub use extract::{ExtractError, Extractor, Frame};
+ pub use parser::{
+diff --git a/src/eac3_pipeline.rs b/src/eac3_pipeline.rs
+index da8a0fd..5fc9957 100644
+--- a/src/eac3_pipeline.rs
++++ b/src/eac3_pipeline.rs
+@@ -1159,6 +1159,7 @@ mod tests {
+             isf_index: None,
+             bed_assignment: vec![bed],
+             elements: Vec::new(),
++            trim: None,
+         }
+     }
+ 
+diff --git a/src/metadata.rs b/src/metadata.rs
+index fc1109b..f515144 100644
+--- a/src/metadata.rs
++++ b/src/metadata.rs
+@@ -74,8 +74,18 @@ fn extract_eac3_events(
+         .object_count
+         .saturating_sub(oamd.bed_or_isf_objects)
+         .min(object_channel_count);
++    let max_updates = oamd
++        .elements
++        .iter()
++        .filter_map(|element| match &element.kind {
++            eac3::OamdElementKind::Object(object) => Some(object.block_updates.len()),
++            _ => None,
++        })
++        .max()
++        .unwrap_or(1);
+     let mut events: RVec<bridge_api::REvent> =
+-        RVec::with_capacity(bed_indices.len() + dynamic_objects);
++        RVec::with_capacity(bed_indices.len() + dynamic_objects * max_updates);
++    let warp_y = oamd.trim.as_ref().is_some_and(|trim| trim.warp_mode == 1);
+ 
+     for &speaker_id in bed_indices {
+         events.push(bridge_api::REvent {
+@@ -98,10 +108,6 @@ fn extract_eac3_events(
+             let Some(blocks) = obj_element.object_blocks.get(obj_idx) else {
+                 continue;
+             };
+-            let Some(block) = blocks.first() else {
+-                continue;
+-            };
+-
+             if obj_idx < oamd.bed_or_isf_objects {
+                 continue;
+             }
+@@ -110,88 +116,85 @@ fn extract_eac3_events(
+                 continue;
+             }
+             let id = (10 + dynamic_idx) as u32;
+-            let has_pos = block.valid_position;
+-            let pos: [f64; 3] = if has_pos {
+-                match block.position.as_ref() {
+-                    Some(p) if !block.differential_position => [
+-                        ((p.x as f64).clamp(0.0, 1.0) - 0.5) * 2.0,
+-                        (0.5 - (p.y as f64).clamp(0.0, 1.0)) * 2.0,
+-                        (p.z as f64).clamp(-1.0, 1.0),
+-                    ],
+-                    Some(p) => [
+-                        (p.x as f64).clamp(-1.0, 1.0),
+-                        (-(p.y as f64)).clamp(-1.0, 1.0),
+-                        (p.z as f64).clamp(-1.0, 1.0),
+-                    ],
+-                    None => [0.0; 3],
++            for (block_index, block) in blocks.iter().enumerate() {
++                let Some(update) = obj_element.block_updates.get(block_index) else {
++                    continue;
++                };
++                let has_pos = block.valid_position && !block.inactive;
++                let pos: [f64; 3] = if has_pos {
++                    match block.position.as_ref() {
++                        Some(p) => {
++                            let mut y = (0.5 - (p.y as f64).clamp(0.0, 1.0)) * 2.0;
++                            if warp_y {
++                                y = (y * 2.0).clamp(-1.0, 1.0);
++                            }
++                            [
++                                ((p.x as f64).clamp(0.0, 1.0) - 0.5) * 2.0,
++                                y,
++                                (p.z as f64).clamp(-1.0, 1.0),
++                            ]
++                        }
++                        None => [0.0; 3],
++                    }
++                } else {
++                    [0.0; 3]
++                };
++                let size: [f64; 3] = block
++                    .size
++                    .map(|s| [s[0] as f64, s[1] as f64, s[2] as f64])
++                    .unwrap_or([0.0, 0.0, 0.0]);
++                let sample_offset = update.offset.max(0) as u64;
++                let ramp_duration = update.ramp_duration.max(0) as u32;
++
++                if size != [0.0, 0.0, 0.0] {
++                    bridge_diag_log(
++                        log::Level::Info,
++                        &format!(
++                            "[harletty][object-size] non-zero detected obj_idx={} dyn_idx={} id={} sample_pos={} sample_offset={} has_pos={} size={:?} ramp={}",
++                            obj_idx,
++                            dynamic_idx,
++                            id,
++                            base_sample_pos + sample_offset,
++                            sample_offset,
++                            has_pos,
++                            size,
++                            ramp_duration
++                        ),
++                    );
++                }
++                if block.distance.is_some()
++                    || block.screen_factor.is_some()
++                    || block.depth_factor.is_some()
++                    || block.anchor != eac3::ObjectAnchor::Room
++                {
++                    bridge_diag_log(
++                        log::Level::Info,
++                        &format!(
++                            "[harletty][oamd] visual attrs obj_idx={} dyn_idx={} id={} sample_pos={} sample_offset={} anchor={:?} distance={:?} screen_factor={:?} depth_factor={:?} size={:?}",
++                            obj_idx,
++                            dynamic_idx,
++                            id,
++                            base_sample_pos + sample_offset,
++                            sample_offset,
++                            block.anchor,
++                            block.distance,
++                            block.screen_factor,
++                            block.depth_factor,
++                            size
++                        ),
++                    );
+                 }
+-            } else {
+-                [0.0; 3]
+-            };
+-            let size: [f64; 3] = block
+-                .size
+-                .map(|s| [s[0] as f64, s[1] as f64, s[2] as f64])
+-                .unwrap_or([0.0, 0.0, 0.0]);
+-
+-            let sample_offset = obj_element
+-                .block_updates
+-                .first()
+-                .map(|u| u.offset as u64)
+-                .unwrap_or(0);
+-            let ramp_duration = obj_element
+-                .block_updates
+-                .first()
+-                .map(|u| u.ramp_duration as u32)
+-                .unwrap_or(0);
+-
+-            if size != [0.0, 0.0, 0.0] {
+-                bridge_diag_log(
+-                    log::Level::Info,
+-                    &format!(
+-                        "[harletty][object-size] non-zero detected obj_idx={} dyn_idx={} id={} sample_pos={} sample_offset={} has_pos={} size={:?} ramp={}",
+-                        obj_idx,
+-                        dynamic_idx,
+-                        id,
+-                        base_sample_pos + sample_offset,
+-                        sample_offset,
+-                        has_pos,
+-                        size,
+-                        ramp_duration
+-                    ),
+-                );
+-            }
+-            if block.distance.is_some()
+-                || block.screen_factor.is_some()
+-                || block.depth_factor.is_some()
+-                || block.anchor != eac3::ObjectAnchor::Room
+-            {
+-                bridge_diag_log(
+-                    log::Level::Info,
+-                    &format!(
+-                        "[harletty][oamd] visual attrs obj_idx={} dyn_idx={} id={} sample_pos={} sample_offset={} anchor={:?} distance={:?} screen_factor={:?} depth_factor={:?} size={:?}",
+-                        obj_idx,
+-                        dynamic_idx,
+-                        id,
+-                        base_sample_pos + sample_offset,
+-                        sample_offset,
+-                        block.anchor,
+-                        block.distance,
+-                        block.screen_factor,
+-                        block.depth_factor,
+-                        size
+-                    ),
+-                );
+-            }
+ 
+-            events.push(bridge_api::REvent {
+-                id,
+-                sample_pos: base_sample_pos + sample_offset,
+-                has_pos,
+-                pos,
+-                gain_db: block.gain.unwrap_or(0.0) as i8,
+-                size,
+-                ramp_duration,
+-            });
++                events.push(bridge_api::REvent {
++                    id,
++                    sample_pos: base_sample_pos + sample_offset,
++                    has_pos,
++                    pos,
++                    gain_db: block.gain.unwrap_or(0),
++                    size,
++                    ramp_duration,
++                });
++            }
+         }
+     }
+ 
+@@ -217,6 +220,7 @@ mod tests {
+             isf_index: None,
+             bed_assignment: vec![vec![eac3::BedChannel::LowFrequencyEffects]],
+             elements: Vec::new(),
++            trim: None,
+         }
+     }
+ 
+@@ -247,7 +251,8 @@ mod tests {
+             render_info_status: 0,
+             render_info_blocks: None,
+             anchor: ObjectAnchor::Room,
+-            gain: Some(0.0),
++            gain: Some(0),
++            gain_from_previous_object: false,
+             priority: None,
+             valid_position: true,
+             differential_position: false,
+@@ -287,6 +292,7 @@ mod tests {
+                     object_blocks: vec![vec![block]],
+                 }),
+             }],
++            trim: None,
+         };
+ 
+         let events = extract_eac3_events(&payload, 0, &[], 1);
+@@ -301,6 +307,67 @@ mod tests {
+             );
+         }
+     }
++
++    #[test]
++    fn eac3_events_apply_warp_and_emit_every_update() {
++        use eac3::{
++            OAMD_TRIM_CONFIGS, OamdBlockUpdate, OamdElement, OamdElementKind, OamdObjectBlock,
++            OamdObjectElement, OamdTrimElement, ObjectAnchor, Vec3,
++        };
++
++        let block = |y: f32, gain: i8| OamdObjectBlock {
++            gain: Some(gain),
++            valid_position: true,
++            position: Some(Vec3 { x: 0.5, y, z: 0.0 }),
++            anchor: ObjectAnchor::Room,
++            ..OamdObjectBlock::default()
++        };
++        let mut payload = empty_oamd_payload();
++        payload.object_count = 2;
++        payload.bed_or_isf_objects = 1;
++        payload.dynamic_objects = 1;
++        payload.element_count = 2;
++        payload.elements = vec![OamdElement {
++            element_index: 1,
++            byte_length: 0,
++            kind: OamdElementKind::Object(OamdObjectElement {
++                sample_offset: 0,
++                block_updates: vec![
++                    OamdBlockUpdate {
++                        offset: 32,
++                        ramp_duration: 64,
++                    },
++                    OamdBlockUpdate {
++                        offset: 96,
++                        ramp_duration: 128,
++                    },
++                ],
++                object_blocks: vec![
++                    vec![OamdObjectBlock::default(); 2],
++                    vec![block(0.25, -3), block(0.75, -9)],
++                ],
++            }),
++        }];
++        payload.trim = Some(OamdTrimElement {
++            warp_mode: 1,
++            reserved: 0,
++            global_trim_mode: 0,
++            trims: [None; OAMD_TRIM_CONFIGS],
++            disable_trim_per_object: Vec::new(),
++        });
++
++        let events = extract_eac3_events(&payload, 1_000, &[3], 1);
++        let dynamic: Vec<_> = events.iter().filter(|event| event.id == 10).collect();
++        assert_eq!(dynamic.len(), 2);
++        assert_eq!(dynamic[0].sample_pos, 1_032);
++        assert_eq!(dynamic[1].sample_pos, 1_096);
++        assert_eq!(dynamic[0].ramp_duration, 64);
++        assert_eq!(dynamic[1].ramp_duration, 128);
++        assert_eq!(dynamic[0].gain_db, -3);
++        assert_eq!(dynamic[1].gain_db, -9);
++        assert!((dynamic[0].pos[1] - 1.0).abs() < 1e-9);
++        assert!((dynamic[1].pos[1] + 1.0).abs() < 1e-9);
++    }
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
