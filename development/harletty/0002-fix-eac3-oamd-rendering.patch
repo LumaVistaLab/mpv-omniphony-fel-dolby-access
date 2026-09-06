@@ -933,7 +933,7 @@ diff --git a/src/metadata.rs b/src/metadata.rs
 index fc1109b..f515144 100644
 --- a/src/metadata.rs
 +++ b/src/metadata.rs
-@@ -74,8 +74,18 @@ fn extract_eac3_events(
+@@ -74,8 +74,17 @@ fn extract_eac3_events(
          .object_count
          .saturating_sub(oamd.bed_or_isf_objects)
          .min(object_channel_count);
@@ -949,7 +949,6 @@ index fc1109b..f515144 100644
      let mut events: RVec<bridge_api::REvent> =
 -        RVec::with_capacity(bed_indices.len() + dynamic_objects);
 +        RVec::with_capacity(bed_indices.len() + dynamic_objects * max_updates);
-+    let warp_y = oamd.trim.as_ref().is_some_and(|trim| trim.warp_mode == 1);
  
      for &speaker_id in bed_indices {
          events.push(bridge_api::REvent {
@@ -964,7 +963,7 @@ index fc1109b..f515144 100644
              if obj_idx < oamd.bed_or_isf_objects {
                  continue;
              }
-@@ -110,88 +116,85 @@ fn extract_eac3_events(
+@@ -110,88 +115,81 @@ fn extract_eac3_events(
                  continue;
              }
              let id = (10 + dynamic_idx) as u32;
@@ -986,20 +985,16 @@ index fc1109b..f515144 100644
 +                let Some(update) = obj_element.block_updates.get(block_index) else {
 +                    continue;
 +                };
++                // Trim and warp describe presentation/downmix behaviour. Keep
++                // live object positions independent of that presentation metadata.
 +                let has_pos = block.valid_position && !block.inactive;
 +                let pos: [f64; 3] = if has_pos {
 +                    match block.position.as_ref() {
-+                        Some(p) => {
-+                            let mut y = (0.5 - (p.y as f64).clamp(0.0, 1.0)) * 2.0;
-+                            if warp_y {
-+                                y = (y * 2.0).clamp(-1.0, 1.0);
-+                            }
-+                            [
-+                                ((p.x as f64).clamp(0.0, 1.0) - 0.5) * 2.0,
-+                                y,
-+                                (p.z as f64).clamp(-1.0, 1.0),
-+                            ]
-+                        }
++                        Some(p) => [
++                            ((p.x as f64).clamp(0.0, 1.0) - 0.5) * 2.0,
++                            (0.5 - (p.y as f64).clamp(0.0, 1.0)) * 2.0,
++                            (p.z as f64).clamp(-1.0, 1.0),
++                        ],
 +                        None => [0.0; 3],
 +                    }
 +                } else {
@@ -1162,7 +1157,7 @@ index fc1109b..f515144 100644
      }
 +
 +    #[test]
-+    fn eac3_events_apply_warp_and_emit_every_update() {
++    fn eac3_events_keep_positions_independent_of_trim_and_emit_every_update() {
 +        use eac3::{
 +            OAMD_TRIM_CONFIGS, OamdBlockUpdate, OamdElement, OamdElementKind, OamdObjectBlock,
 +            OamdObjectElement, OamdTrimElement, ObjectAnchor, Vec3,
@@ -1218,8 +1213,8 @@ index fc1109b..f515144 100644
 +        assert_eq!(dynamic[1].ramp_duration, 128);
 +        assert_eq!(dynamic[0].gain_db, -3);
 +        assert_eq!(dynamic[1].gain_db, -9);
-+        assert!((dynamic[0].pos[1] - 1.0).abs() < 1e-9);
-+        assert!((dynamic[1].pos[1] + 1.0).abs() < 1e-9);
++        assert!((dynamic[0].pos[1] - 0.5).abs() < 1e-9);
++        assert!((dynamic[1].pos[1] + 0.5).abs() < 1e-9);
 +    }
  }
  

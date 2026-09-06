@@ -18,9 +18,10 @@ declared 7-input JOC matrix.
 
 Harletty also corrects JOC dequantisation, sparse-matrix and interpolation edge
 cases, aligns bypassed LFE and OAMD events with the 577-sample JOC QMF path, and
-decodes OAMD gain, inheritance, position, warp, update timing and discontinuity
-semantics. The companion Omniphony patch retains metadata events across frame
-boundaries, applies every update at its exact sample, and renders object-gain
+decodes OAMD gain, inheritance, position, update timing and discontinuity
+semantics while keeping presentation trim/warp metadata separate from live
+object coordinates. The companion Omniphony patch retains metadata events
+across frame boundaries, applies every update at its exact sample, and renders object-gain
 ramps in both speaker and binaural paths. DD+ remains a lossy delivery format;
 these changes remove additional decoder/renderer errors rather than claiming
 bit-identical output to TrueHD Atmos.
@@ -158,8 +159,9 @@ Omniphony v0.4.1 sources. Use Rust 1.88 or newer with the MSVC target:
   correct matrix reconstruction, delay bypassed LFE by the QMF path's 577
   samples, and time-shift OAMD events by the same amount.
 - OAMD gain/status defaults, previous-object and previous-update inheritance,
-  differential positions, trim `warp_mode`, sequence discontinuities and all
-  block updates are decoded. A block starts at
+  differential positions, sequence discontinuities and all block updates are
+  decoded. Presentation trim/warp metadata is parsed but is not applied to live
+  playback object coordinates. A block starts at
   `sample_offset + 32 * block_offset_factor`.
 - The Omniphony patch queues absolute metadata timestamps across decoded frames,
   splits PCM at every due event boundary, and applies finite linear-amplitude
