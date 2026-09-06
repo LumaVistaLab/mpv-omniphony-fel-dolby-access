@@ -248,6 +248,26 @@ Lua 5.2 的 UCRT `distribution/` 成品。
 seek 时同步停止、Reset、释放旧对象，并重建完整 7.1.4 对象集后继续送帧。若
 替换了 `mpv.exe`，请确认仍应用了最新 `0022`。
 
+### 调整进度后静音数秒
+
+Harletty 在 seek 后保留累计元数据采样时钟，而 orender 的输出时间戳从零重新
+开始。Omniphony `0003` 补丁在两者之间维护采样偏移，使新位置的对象事件及时
+生效，避免连续跳转后静音时间累积。重建 `orender.dll` 时需包含该补丁；
+`prepare-harletty-source.ps1` 会自动应用它。
+
+`development/tools/check-orender-seek.py` 可用原始 E-AC-3 或 TrueHD Atmos 片段
+验证该问题：它在多次 reset 前后重复解码相同片段，比较各声道 PCM、恢复时间
+和输出时间戳，无需打开音频设备。需要 Python 和 NumPy，例如：
+
+```powershell
+python development/tools/check-orender-seek.py sample.ec3 `
+  --orender distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/orender.dll `
+  --bridge distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/harletty_bridge.dll `
+  --config omniphony-dolby-access.config.yaml
+```
+
+TrueHD 片段需加 `--codec truehd`。测试会输出 JSON；回归失败时返回非零退出码。
+
 ### Playback statistics 不持久或不刷新
 
 `mpv-input.conf` 把 `i` / `I` 绑定为 `stats/display-page-1-toggle`；启动器同时设置

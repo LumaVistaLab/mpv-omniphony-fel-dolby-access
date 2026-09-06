@@ -79,7 +79,8 @@ $patchSets = @(
         Target = $omniphonyTarget
         Patches = @(
             (Join-Path $repositoryRoot "development/omniphony/0001-fix-live-log-record-lifetime.patch"),
-            (Join-Path $repositoryRoot "development/omniphony/0002-fix-spatial-metadata-timing-and-gain.patch")
+            (Join-Path $repositoryRoot "development/omniphony/0002-fix-spatial-metadata-timing-and-gain.patch"),
+            (Join-Path $repositoryRoot "development/omniphony/0003-fix-seek-metadata-clock.patch")
         )
     }
 )

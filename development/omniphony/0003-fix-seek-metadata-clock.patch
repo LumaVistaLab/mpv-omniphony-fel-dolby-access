@@ -1,0 +1,42 @@
+diff --git a/omniphony-renderer/orender_engine/src/engine.rs b/omniphony-renderer/orender_engine/src/engine.rs
+--- a/omniphony-renderer/orender_engine/src/engine.rs
++++ b/omniphony-renderer/orender_engine/src/engine.rs
+@@ -56,6 +56,9 @@
+     has_objects: bool,
+     loudness_applied: bool,
+     decoded_samples: u64,
++    /// The bridge keeps its metadata sample clock across resets, while output
++    /// PTS starts at zero after each seek. Add this offset only for scheduling.
++    metadata_sample_offset: u64,
+     /// Dynamic object count of the last rendered frame (`channel_count − beds`),
+     /// `0` for plain multichannel content. Surfaced over FFI for the host's track
+     /// info display. Reset per segment.
+@@ -213,6 +216,7 @@
+             has_objects: false,
+             loudness_applied: false,
+             decoded_samples: 0,
++            metadata_sample_offset: 0,
+             last_object_count: 0,
+             last_dialnorm: None,
+             last_bed_labels: Vec::new(),
+@@ -604,6 +608,11 @@
+         if let Some(osc) = self.osc.as_mut() {
+             osc.request_full_object_resend();
+         }
++        // Harletty preserves its cumulative TrueHD/E-AC-3 sample counters on
++        // reset. Keep the scheduler on that clock: resetting it with output
++        // PTS would defer all new object events by the pre-seek playback time,
++        // leaving the cleared renderer silent (and compounding on each seek).
++        self.metadata_sample_offset += self.decoded_samples;
+         self.decoded_samples = 0;
+         self.drc_gain = 1.0;
+         self.drc_target_gain = 1.0;
+@@ -967,7 +976,7 @@
+         let rendered = self.render_scheduled_pcm(
+             &pcm_f32,
+             channel_count,
+-            sample_pos_at_start,
++            self.metadata_sample_offset + sample_pos_at_start,
+             sample_count,
+             want_metering,
+         )?;

@@ -289,6 +289,29 @@ makes the audio thread stop and reset synchronously on seek, release the old
 objects, and rebuild the complete 7.1.4 object set before feeding more frames.
 If `mpv.exe` has been replaced, confirm that the latest `0022` is still applied.
 
+### Several seconds of silence after seeking
+
+Harletty retains its cumulative metadata sample clock across seeks, while
+orender restarts output timestamps at zero. Omniphony patch `0003` maintains
+the offset between these clocks so new object events take effect on time,
+including after repeated seeks. Include this patch when rebuilding
+`orender.dll`; `prepare-harletty-source.ps1` applies it automatically.
+
+`development/tools/check-orender-seek.py` verifies this with a raw E-AC-3 or
+TrueHD Atmos excerpt. It repeatedly resets and decodes the same excerpt,
+comparing per-channel PCM, audio recovery and output timestamps without
+opening an audio device. Requires Python and NumPy, for example:
+
+```powershell
+python development/tools/check-orender-seek.py sample.ec3 `
+  --orender distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/orender.dll `
+  --bridge distribution/mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix/harletty_bridge.dll `
+  --config omniphony-dolby-access.config.yaml
+```
+
+Add `--codec truehd` for a TrueHD excerpt. The test emits JSON and exits with
+a nonzero status on regression.
+
 ### Playback statistics do not persist or refresh
 
 `mpv-input.conf` binds `i` and `I` to `stats/display-page-1-toggle`. The launcher
