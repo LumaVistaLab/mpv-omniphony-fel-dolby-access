@@ -1,0 +1,23 @@
+diff --git a/player/lua/ytdl_hook.lua b/player/lua/ytdl_hook.lua
+index 701bc2ae6..3e325d2b7 100644
+--- a/player/lua/ytdl_hook.lua
++++ b/player/lua/ytdl_hook.lua
+@@ -84,12 +84,18 @@ local codec_map = {
+     ["srt"]         = "subrip",
+     ["vtt"]         = "webvtt",
+     ["opus"]        = "opus",
++    ["flac"]        = "flac",
++    ["eac3"]        = "eac3",
++    ["ec%-3"]       = "eac3",
+     ["vp9"]         = "vp9",
+     ["vp9%..*"]     = "vp9",
+     ["avc1%..*"]    = "h264",
+     ["av01%..*"]    = "av1",
+     ["mp4a%..*"]    = "aac",
+     ["hev1%..*"]    = "hevc",
++    ["hvc1%..*"]    = "hevc",
++    ["dvh1%..*"]    = "hevc",
++    ["dvhe%..*"]    = "hevc",
+ }
+ 
+ if mp.get_property_native("subrandr-version") ~= nil then

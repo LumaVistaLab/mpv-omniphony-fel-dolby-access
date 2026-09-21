@@ -5,6 +5,13 @@ sources/
 
 mpv-omniphony-fel-dolby-access.code-workspace
 
+# Local Bilibili login cookies. Never commit account credentials.
+bilibili-cookies.txt
+
+# Python helper bytecode.
+__pycache__/
+*.py[cod]
+
 # Compiled products. Source, patches, configuration, and build scripts stay tracked.
 *.com
 *.dll

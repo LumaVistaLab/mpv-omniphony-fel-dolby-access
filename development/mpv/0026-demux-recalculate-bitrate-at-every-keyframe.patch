@@ -1,0 +1,28 @@
+diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
+index 9d55d2c55..513d7d83c 100644
+--- a/DOCS/man/input.rst
++++ b/DOCS/man/input.rst
+@@ -3893,8 +3893,8 @@ Property list
+     timestamp distance. (This uses the timestamps are stored in the file, so
+     e.g. playback speed does not influence the returned values.) In particular,
+     the video bitrate will update only per keyframe, and show the "past"
+-    bitrate. To make the property more UI friendly, updates to these properties
+-    are throttled in a certain way.
++    bitrate. A new video value is published at every keyframe with a positive
++    timestamp interval. Other stream types retain the 500 ms minimum interval.
+ 
+     The unit is bits per second. OSD formatting turns these values in kilobits
+     (or megabits, if appropriate), which can be prevented by using the
+diff --git a/demux/demux.c b/demux/demux.c
+index 69008829c..969c0ba3e 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -2842,7 +2842,7 @@ static int dequeue_packet(struct demux_stream *ds, double min_pts,
+             ds->bitrate = -1;
+             ds->last_br_ts = ts;
+             ds->last_br_bytes = 0;
+-        } else if (d >= 0.5) { // a window of least 500ms for UI purposes
++        } else if (d > 0 && (ds->type == STREAM_VIDEO || d >= 0.5)) {
+             ds->bitrate = ds->last_br_bytes / d;
+             ds->last_br_ts = ts;
+             ds->last_br_bytes = 0;

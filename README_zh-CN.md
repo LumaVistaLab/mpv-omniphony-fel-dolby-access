@@ -46,14 +46,18 @@ mpv-omniphony-fel-dolby-access/
 │   ├── mpv/                                  # mpv 补丁
 │   ├── harletty/                             # E-AC-3/JOC 解码器补丁
 │   ├── omniphony/                            # 空间元数据与渲染补丁
-│   ├── scripts/                              # 源码准备与 Windows 构建脚本
+│   ├── scripts/                              # 源码准备、构建及 yt-dlp 安装脚本
 │   └── tools/
 │       ├── ispatialaudio-probe.c             # Spatial API 独立探针源码
 │       └── compare-spatial-wav.py            # 分声道 PCM 回归比较工具
+├── bilibili-cookies.example.txt              # 登录 cookies 模板（不含凭据）
 ├── mpv-input.conf                            # 实时统计按键绑定
 ├── omniphony-dolby-access.config.yaml        # 7.1.4 渲染配置
 ├── overlay-prefs.conf                        # 空间对象 overlay 偏好
 ├── play-dovi-atmos.bat                       # 播放入口
+├── test-click-muted.bat                      # 数字静音 click 隔离入口
+├── test-click-plain-wasapi.bat                # Omniphony/普通 WASAPI 对照入口
+├── test-click-native.bat                      # 原生解码/普通 WASAPI 对照入口
 ├── sources/                                  # 未修改的上游源码（Git 忽略）
 ├── releases/                                 # 未修改的上游发布包（Git 忽略）
 ├── build_temp/                               # 补丁工作树与中间产物（Git 忽略）
@@ -193,6 +197,67 @@ Omniphony Studio 不是播放依赖，无需安装或预先启动。mpv 运行�
 .\play-dovi-atmos.bat "D:\Movies\Example.mkv"
 ```
 
+### B 站在线回放
+
+首次使用先安装最新版官方 yt-dlp。安装器从上游 GitHub Release 下载，只有在
+SHA-256 与上游校验清单一致时才会写入成品目录：
+
+```powershell
+.\development\scripts\install-yt-dlp.ps1
+```
+
+启动器现在会在每次在线回放前校验已保存的 B 站登录状态。Cookie 文件不存在或登录
+失效时，会自动弹出二维码窗口；使用哔哩哔哩 App 扫码并在手机上确认后，启动器继续
+原链接的回放。该流程避免 Chromium Cookie 数据库锁定和 App-Bound/DPAPI 解密失败，
+也不会导出浏览器中的其他网站或 B 站追踪 Cookie。二维码运行库已放在
+`distribution/tools`；若重新生成了该成品目录，可执行一次：
+
+```powershell
+.\development\scripts\install-bilibili-login-helper.ps1
+```
+
+二维码完全在本机生成并绘制。扫码确认后，助手会验证返回的认证 Cookie 子集，只把
+B 站仍认可登录的最小子集写入仓库根目录的 `bilibili-cookies.txt`；实测通常只需
+`SESSDATA`。二维码超时会在同一窗口自动刷新。Cookie 值不会显示在终端，真实文件
+已加入 `.gitignore`，仍须像密码一样保管。原生弹窗需要带 Tk 的 Python 3；如需指定
+解释器，可设置 `PYTHON_PATH` 指向 `python.exe`。
+
+播放器把该文件复制到一次性运行时 Cookie jar 再交给 yt-dlp，播放结束即删除副本；
+这样 yt-dlp 收到的设备或追踪 Cookie 不会回写并污染持久文件。如果登录失效、账号
+没有对应会员权限，杜比视界、杜比全景声、HDR、4K、8K 和高码率等会员流仍会按
+B 站正常权限规则不可用，本项目不绕过这些限制。
+
+此后在输入本地路径的同一提示中直接粘贴 B 站链接即可：
+
+```powershell
+.\play-dovi-atmos.bat "https://www.bilibili.com/video/BV..."
+```
+
+默认选流顺序如下：
+
+1. 杜比视界视频 + 杜比全景声音频（`30250`）。
+2. 杜比视界视频 + 当前最佳音频。
+3. 当前最佳视频 + 杜比全景声音频。
+4. 当前可用的最高质量视频和音频，或最佳音画合并流。
+
+yt-dlp 返回的其他 DASH 格式也会全部成为 mpv 轨道。已选中的单流视频、音频格式
+会立即打开，未选中的备选格式仍保持延迟加载。播放中按 `Ctrl+V` 打开视频轨选择器、
+按 `Ctrl+A` 打开音频轨选择器；也可在 mpv 底部控制
+条上右键单击对应的视频/音频按钮。原生选择器会显示 B 站提供的清晰度名称，以及
+编码、分辨率、帧率、声道数、采样率和码率，因此可在当前账号实际拥有的杜比视界、
+HDR、8K、4K、1080P 高码率/高帧率、杜比全景声、Hi-Res/FLAC、AAC 等流之间切换。
+只有实际选中的远程轨道会被打开。
+
+启动器使用 `distribution/tools/ytdl_hook.lua` 修正 B 站 DASH 元数据中的编码名称：
+`hvc1`/`dvh1`/`dvhe` 映射为 HEVC，`ec-3` 映射为 E-AC-3，`flac` 映射为 FLAC。
+这让延迟加载轨道在尚未打开时也不会显示 `null`。立即打开已选格式还会让
+Playback statistics 读取真实的解复用器/解码器 profile，使在线回放与本地回放采用
+同一显示策略：例如显示 HEVC `Main 10`，以及 `Dolby Digital Plus + Dolby Atmos ·
+LFE+N objects · DialNorm -N dB`，而不是错误回退为 H.264/AAC 或只显示基础编码。
+
+如需临时使用其他文件位置，可通过 `BILIBILI_COOKIES` 指定 cookies，通过
+`YTDLP_PATH` 指定 yt-dlp 可执行文件，通过 `YTDL_HOOK_PATH` 指定修正后的 hook。
+
 若成品在其他位置，可临时指定已打本项目补丁的 mpv：
 
 ```powershell
@@ -224,7 +289,32 @@ Windows/Dolby Atmos for Headphones 完成。视频默认通过 D3D11VA 零拷贝
 基础层和增强层需要同时解码。若显卡或驱动不兼容，可临时设置
 `$env:MPV_HWDEC = "no"` 后再运行启动器，强制回退软件解码。
 
+对于 B 站链接，启动器还会启用 mpv 的 yt-dlp hook、通过一次性副本传入持久
+cookies、把所有返回格式暴露为轨道，并使用下面的默认选择式（为便于阅读而换行）：
+
+```text
+bestvideo[dynamic_range=DV]+bestaudio[format_id='30250'] /
+bestvideo[dynamic_range=DV]+bestaudio /
+bestvideo+bestaudio[format_id='30250'] /
+bestvideo+bestaudio / best
+```
+
+选择 E-AC-3 杜比全景声轨时使用 `orender`；切换到 AAC 或 FLAC 时，mpv 会自动
+回退其原生解码器，同时保持同一套音频输出设备优先级。
+
 ## 验证与排错
+
+### click 与首个节目声音精确重合
+
+用同一部影片运行 `test-click-muted.bat`。它保持完全相同的解码器、Spatial Sound
+流和时序，只在 mpv 最终输出增益处执行数字静音。如果整段无声
+播放中仍有 click，来源就在 mpv PCM 增益之后（Dolby provider、驱动或端点）；若
+click 消失，说明它与首个非零 PCM 耦合，但仍可能由下游 Spatial Sound 静态对象
+开始工作时产生。
+
+请使用同一片源分别运行 `test-click-plain-wasapi.bat`（Omniphony renderer +
+普通 WASAPI 立体声）和 `test-click-native.bat`（原生解码器 + 普通 WASAPI
+立体声），进行 A/B 定位。这两个入口仅用于诊断，正常播放参数保持不变。
 
 ### 确认 7.1.4 没有降级
 

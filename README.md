@@ -57,14 +57,18 @@ mpv-omniphony-fel-dolby-access/
 │   ├── mpv/                                  # mpv patches
 │   ├── harletty/                             # E-AC-3/JOC decoder patch
 │   ├── omniphony/                            # Spatial metadata/rendering patches
-│   ├── scripts/                              # Source preparation and Windows build scripts
+│   ├── scripts/                              # Source preparation, build, and yt-dlp installer scripts
 │   └── tools/
 │       ├── ispatialaudio-probe.c             # Standalone Spatial API probe source
 │       └── compare-spatial-wav.py            # Per-channel PCM regression comparison
+├── bilibili-cookies.example.txt              # Login-cookie file template (no credentials)
 ├── mpv-input.conf                            # Live statistics key bindings
 ├── omniphony-dolby-access.config.yaml        # 7.1.4 render configuration
 ├── overlay-prefs.conf                        # Spatial-object overlay preferences
 ├── play-dovi-atmos.bat                       # Playback launcher
+├── test-click-muted.bat                      # Digital-mute click isolation launcher
+├── test-click-plain-wasapi.bat                # Omniphony through stereo WASAPI diagnostic
+├── test-click-native.bat                      # Native decoder/stereo WASAPI diagnostic
 ├── sources/                                  # Unmodified upstream sources (ignored)
 ├── releases/                                 # Unmodified upstream packages (ignored)
 ├── build_temp/                               # Patched trees and intermediates (ignored)
@@ -226,6 +230,79 @@ A path can also be passed directly:
 .\play-dovi-atmos.bat "D:\Movies\Example.mkv"
 ```
 
+### Bilibili playback
+
+Install the current official yt-dlp executable once. The installer downloads
+the release from the upstream GitHub repository and refuses to install it
+unless its SHA-256 hash matches the upstream checksum list:
+
+```powershell
+.\development\scripts\install-yt-dlp.ps1
+```
+
+The launcher now validates the saved Bilibili session before every online
+playback. If the file is missing or the session has expired, it opens a native
+QR window automatically; scan it with the Bilibili app and confirm on the
+phone, then playback continues. This avoids Chromium cookie-database locks and
+App-Bound/DPAPI decryption failures and never exports browser tracking cookies.
+The QR runtime is bundled under `distribution/tools`; if that generated folder
+is being recreated, install the pure-Python dependency once with:
+
+```powershell
+.\development\scripts\install-bilibili-login-helper.ps1
+```
+
+The QR is generated and rendered locally. After login, the helper validates
+the returned authentication-cookie subsets and writes only the smallest one
+accepted by Bilibili to `bilibili-cookies.txt`; in testing this is only
+`SESSDATA`. An expired QR is refreshed automatically in the same window.
+Cookie values are never printed. The real file is ignored by Git but must still
+be treated like a password. Python 3 with Tk support is required for the native
+window; `PYTHON_PATH` may point the launcher to a specific `python.exe`.
+
+The launcher gives yt-dlp a disposable run-time copy and removes it after
+playback, so device or tracking cookies received by yt-dlp cannot pollute the
+persistent file. Without a valid logged-in premium account, member-only Dolby
+Vision, Dolby Atmos, HDR, 4K, 8K, and high-bitrate formats remain unavailable
+according to Bilibili's normal access rules.
+
+The launcher accepts a Bilibili URL in the same prompt as a local path:
+
+```powershell
+.\play-dovi-atmos.bat "https://www.bilibili.com/video/BV..."
+```
+
+Its default stream policy is, in order:
+
+1. Dolby Vision video plus Dolby Atmos audio (`30250`).
+2. Dolby Vision video plus the best available audio.
+3. The best available video plus Dolby Atmos audio.
+4. The highest-quality available video and audio, or the best combined stream.
+
+All DASH alternatives reported by yt-dlp are also exposed as mpv tracks. The
+selected single-stream video and audio formats are opened immediately, while
+unselected alternatives remain delay-loaded. Press `Ctrl+V` for the video-track selector and `Ctrl+A` for the
+audio-track selector, or right-click the corresponding video/audio button in
+mpv's on-screen controller. The native selector shows the Bilibili quality
+name when provided, plus codec, resolution, frame rate, channel count, sample
+rate, and bitrate. This allows switching among Dolby Vision, HDR, 8K, 4K,
+1080p high-bitrate/high-frame-rate, Dolby Atmos, Hi-Res/FLAC, and AAC variants
+that are actually available to the logged-in account. Only the selected remote
+tracks are opened.
+
+The launcher uses `distribution/tools/ytdl_hook.lua` to normalize Bilibili DASH
+codec identifiers: `hvc1`/`dvh1`/`dvhe` become HEVC, `ec-3` becomes E-AC-3,
+and `flac` becomes FLAC. Delay-loaded tracks therefore have a real codec before
+they are opened. Opening the selected formats immediately also lets Playback
+statistics read their real demuxer/decoder profiles, so online playback reports
+details such as HEVC `Main 10` and `Dolby Digital Plus + Dolby Atmos · LFE+N
+objects · DialNorm -N dB` with the same policy as local playback instead of
+falling back to H.264/AAC or showing only the base codec.
+
+Set `BILIBILI_COOKIES` to override the cookie-file path or `YTDLP_PATH` to use a
+different yt-dlp executable for a single shell session. `YTDL_HOOK_PATH` may
+override the metadata-aware hook.
+
 If the runnable package is elsewhere, temporarily select a patched mpv build:
 
 ```powershell
@@ -261,7 +338,36 @@ is especially important for high-bitrate 4K and 50/60 fps Dolby Vision Profile
 If a GPU or driver is incompatible, set `$env:MPV_HWDEC = "no"` before running
 the launcher to force software decoding.
 
+For Bilibili URLs the launcher additionally enables mpv's yt-dlp hook, passes a
+disposable copy of the persistent cookie file, exposes all returned formats as
+tracks, and uses this default selector (line breaks added for readability):
+
+```text
+bestvideo[dynamic_range=DV]+bestaudio[format_id='30250'] /
+bestvideo[dynamic_range=DV]+bestaudio /
+bestvideo+bestaudio[format_id='30250'] /
+bestvideo+bestaudio / best
+```
+
+`orender` is available for the E-AC-3 Dolby Atmos track. When AAC or FLAC is
+selected, mpv automatically falls back to its normal decoder while keeping the
+same configured output-device preference.
+
 ## Verification and Troubleshooting
+
+### Click aligned with the first program sound
+
+Run `test-click-muted.bat` with the same movie. It uses the identical decoder,
+Spatial Sound stream and timing, but applies mpv's final
+digital mute. A click that remains during this otherwise silent run is produced
+after mpv's PCM gain stage (Dolby provider, driver, or endpoint). If it
+disappears, it is coupled to the first non-zero PCM, but can still be generated
+downstream when a Spatial Sound static object becomes active.
+
+For an A/B isolation test with the same movie, run both
+`test-click-plain-wasapi.bat` (Omniphony renderer, ordinary WASAPI stereo) and
+`test-click-native.bat` (native decoder, ordinary WASAPI stereo). These are
+diagnostic launchers only; normal playback remains unchanged.
 
 ### Confirm that 7.1.4 has not fallen back
 

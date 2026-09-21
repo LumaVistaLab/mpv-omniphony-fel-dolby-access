@@ -1,0 +1,7 @@
+# Netscape HTTP Cookie File
+#
+# The launcher creates this file automatically after QR login whenever the
+# Bilibili session is missing or expired. The helper validates and saves the
+# smallest accepted authentication-cookie subset (normally only SESSDATA).
+# The real file is ignored by Git and must be kept private. The launcher reads
+# it through a disposable copy so yt-dlp cannot add tracking cookies to it.

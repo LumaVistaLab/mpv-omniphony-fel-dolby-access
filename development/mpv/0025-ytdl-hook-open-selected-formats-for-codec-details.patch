@@ -1,0 +1,30 @@
+diff --git a/player/lua/ytdl_hook.lua b/player/lua/ytdl_hook.lua
+index 3e325d2b7..988f69f39 100644
+--- a/player/lua/ytdl_hook.lua
++++ b/player/lua/ytdl_hook.lua
+@@ -553,7 +553,11 @@ local function formats_to_edl(json, formats, use_all_formats)
+ 
+         if use_all_formats then
+             for _, sub in ipairs(tracks) do
+-                -- A single track that is either audio or video. Delay load it.
++                -- Open a selected single-stream format immediately so that
++                -- current-tracks exposes the real demuxer/decoder codec
++                -- parameters (profile, HDR metadata, Atmos details, etc.).
++                -- Keep unselected alternatives and muxed formats delay-loaded.
++                local delay_load = not is_default or #tracks > 1
+                 local props = ""
+                 if sub.media_type == "video" then
+                     props = props .. ",w=" .. as_integer(track.width)
+@@ -562,8 +566,10 @@ local function formats_to_edl(json, formats, use_all_formats)
+                 elseif sub.media_type == "audio" then
+                     props = props .. ",samplerate=" .. as_integer(track.asr)
+                 end
+-                hdr[#hdr + 1] = "!delay_open,media_type=" .. sub.media_type ..
+-                    ",codec=" .. (sub.codec or "null") .. props
++                if delay_load then
++                    hdr[#hdr + 1] = "!delay_open,media_type=" .. sub.media_type ..
++                        ",codec=" .. (sub.codec or "null") .. props
++                end
+ 
+                 -- Add bitrate information etc. for better user selection.
+                 local byterate = 0
