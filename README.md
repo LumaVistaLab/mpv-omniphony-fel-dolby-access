@@ -279,7 +279,9 @@ Its default stream policy is, in order:
 3. The best available video plus Dolby Atmos audio.
 4. The highest-quality available video and audio, or the best combined stream.
 
-All DASH alternatives reported by yt-dlp are also exposed as mpv tracks. The
+Online playback explicitly enables `--flatten-editions=yes`, exposing video
+quality editions as video tracks. All DASH video and audio alternatives
+reported by yt-dlp therefore appear in their respective track menus. The
 selected single-stream video and audio formats are opened immediately, while
 unselected alternatives remain delay-loaded. Press `Ctrl+V` for the video-track selector and `Ctrl+A` for the
 audio-track selector, or right-click the corresponding video/audio button in
@@ -290,7 +292,20 @@ rate, and bitrate. This allows switching among Dolby Vision, HDR, 8K, 4K,
 that are actually available to the logged-in account. Only the selected remote
 tracks are opened.
 
-The launcher uses `distribution/tools/ytdl_hook.lua` to normalize Bilibili DASH
+Format menus prefer the nominal bitrate advertised by Bilibili over a demuxer
+probe estimate that may cover only an initial fragment. Files without an
+advertised rate still use the demuxer bitrate. Playback statistics continue
+to calculate the live bitrate from the packets being played.
+
+Video format menus consistently use the source's advertised frame rate,
+preserving fractional values such as `29.97`, `59.933`, and `59.94`. Default
+and alternative streams use the same source, unchanged after selection or
+switching. Files without an advertised frame rate fall back to the demuxer
+rate. Playback continues to follow the media timestamps.
+
+The launcher prefers `tools/ytdl_hook.lua` inside the selected runtime package,
+falling back to `distribution/tools/ytdl_hook.lua`, so the EDL metadata syntax
+stays compatible with that mpv build. The hook normalizes Bilibili DASH
 codec identifiers: `hvc1`/`dvh1`/`dvhe` become HEVC, `ec-3` becomes E-AC-3,
 and `flac` becomes FLAC. Delay-loaded tracks therefore have a real codec before
 they are opened. Opening the selected formats immediately also lets Playback

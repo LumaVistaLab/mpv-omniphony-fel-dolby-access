@@ -1,0 +1,70 @@
+diff --git a/DOCS/edl-mpv.rst b/DOCS/edl-mpv.rst
+--- a/DOCS/edl-mpv.rst
++++ b/DOCS/edl-mpv.rst
+@@ -315,8 +315,10 @@
+     For video codecs: expected video size. See ``codec`` for details.
+ 
+ ``fps``
+-    For video codecs: expected video framerate, as integer. (The rate is usually
+-    only crudely reported, and it makes no sense to expect exact values.)
++    For video codecs: expected video framerate, as a finite floating-point
++    number (for example, ``23.976`` or ``59.94``). Integer rates remain valid.
++    This is a hint for an unopened stream; opening it may refine the rate
++    using the actual media timestamps.
+ 
+ ``samplerate``
+     For audio codecs: expected sample rate, as integer.
+diff --git a/demux/demux_edl.c b/demux/demux_edl.c
+--- a/demux/demux_edl.c
++++ b/demux/demux_edl.c
+@@ -121,6 +121,23 @@
+             return def;
+         }
+         return ival;
++    }
++    return def;
++}
++
++// Optional finite floating-point parameter.
++static double get_param_double(struct parse_ctx *ctx, const char *name, double def)
++{
++    bstr val = get_param(ctx, name);
++    if (val.start) {
++        bstr rest;
++        double num = bstrtod(val, &rest);
++        if (!val.len || rest.len || !isfinite(num)) {
++            MP_ERR(ctx, "Invalid number for %s: '%.*s'\n", name, BSTR_P(val));
++            ctx->error = true;
++            return def;
++        }
++        return num;
+     }
+     return def;
+ }
+@@ -276,7 +293,7 @@
+                     sh->codec->codec = "null";
+                 sh->codec->disp_w = get_param_int(&ctx, "w", 0);
+                 sh->codec->disp_h = get_param_int(&ctx, "h", 0);
+-                sh->codec->fps = get_param_int(&ctx, "fps", 0);
++                sh->codec->fps = get_param_double(&ctx, "fps", 0);
+                 sh->codec->samplerate = get_param_int(&ctx, "samplerate", 0);
+                 tl->delay_open = true;
+             } else if (bstr_equals0(f_type, "global_tags")) {
+diff --git a/player/lua/ytdl_hook.lua b/player/lua/ytdl_hook.lua
+--- a/player/lua/ytdl_hook.lua
++++ b/player/lua/ytdl_hook.lua
+@@ -560,9 +560,13 @@
+                 local delay_load = not is_default or #tracks > 1
+                 local props = ""
+                 if sub.media_type == "video" then
++                    -- Keep fractional rates for unopened alternatives, just as
++                    -- the demuxer does for the selected video stream.
++                    local fps = tonumber(track.fps) or 0
++                    if not (fps > 0 and fps < math.huge) then fps = 0 end
+                     props = props .. ",w=" .. as_integer(track.width)
+                                   .. ",h=" .. as_integer(track.height)
+-                                  .. ",fps=" .. as_integer(track.fps)
++                                  .. ",fps=" .. string.format("%.17g", fps)
+                 elseif sub.media_type == "audio" then
+                     props = props .. ",samplerate=" .. as_integer(track.asr)
+                 end

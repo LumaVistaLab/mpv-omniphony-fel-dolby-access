@@ -1,0 +1,55 @@
+diff --git a/demux/demux.c b/demux/demux.c
+index 4e89a62905..2419cc7c91 100644
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -1288,10 +1288,12 @@ void demux_append_codec_desc(void *ta_ctx, bstr *dst, struct sh_stream *sh,
+     if (c->samplerate)
+         bstr_xappend_asprintf(ta_ctx, dst, " %d Hz", c->samplerate);
+     int bitrate = 0;
+-    if (c->bitrate > 0 && c->bitrate < INT_MAX - 500) {
+-        bitrate = (c->bitrate + 500) / 1000;
+-    } else if (sh->hls_bitrate > 0 && sh->hls_bitrate < INT_MAX - 500) {
++    // A manifest/EDL rate describes the format; a probe may cover only a
++    // small initial fragment. Keep edition and track descriptions consistent.
++    if (sh->hls_bitrate > 0 && sh->hls_bitrate < INT_MAX - 500) {
+         bitrate = (sh->hls_bitrate + 500) / 1000;
++    } else if (c->bitrate > 0 && c->bitrate < INT_MAX - 500) {
++        bitrate = (c->bitrate + 500) / 1000;
+     }
+     if (bitrate)
+         append_field(ta_ctx, dst, skip_dup, mp_tprintf(32, "%d kbps", bitrate));
+diff --git a/player/lua/select.lua b/player/lua/select.lua
+index b4c8289a05..4ad8881df3 100644
+--- a/player/lua/select.lua
++++ b/player/lua/select.lua
+@@ -135,7 +135,8 @@ local function format_flags(track)
+ end
+ 
+ local function format_track(track)
+-    local bitrate = track["demux-bitrate"] or track["hls-bitrate"]
++    -- Prefer the advertised format rate over a partial-stream probe estimate.
++    local bitrate = track["hls-bitrate"] or track["demux-bitrate"]
+ 
+     return (track.selected and "●" or "○") ..
+         (track.title and " " .. track.title or "") ..
+diff --git a/player/lua/ytdl_hook.lua b/player/lua/ytdl_hook.lua
+index 988f69f399..5ee073e30a 100644
+--- a/player/lua/ytdl_hook.lua
++++ b/player/lua/ytdl_hook.lua
+@@ -581,11 +581,13 @@ local function formats_to_edl(json, formats, use_all_formats)
+                     rates = {"tbr"}
+                 end
+                 for _, f in ipairs(rates) do
+-                    local br = as_integer(track[f])
+-                    if br > 0 then
+-                        byterate = math.floor(br * 1000 / 8)
++                    -- yt-dlp rates are fractional kbit/s; convert units before
++                    -- truncating to the integer byte rate required by EDL.
++                    byterate = as_integer((tonumber(track[f]) or 0) * 1000 / 8)
++                    if byterate > 0 then
+                         break
+                     end
++                    byterate = 0
+                 end
+                 local title = track.format or track.format_note or ""
+                 if #tracks > 1 then

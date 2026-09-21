@@ -41,6 +41,33 @@ echo   "%MPV_SPATIAL%"
 exit /b 1
 
 :find_default_mpv
+set "PATCHED_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix-0034-stable-format-fps"
+if exist "%PATCHED_MPV_DIR%\mpv.com" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.com"
+    goto :found_mpv
+)
+if exist "%PATCHED_MPV_DIR%\mpv.exe" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.exe"
+    goto :found_mpv
+)
+set "PATCHED_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix-0033-fractional-fps"
+if exist "%PATCHED_MPV_DIR%\mpv.com" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.com"
+    goto :found_mpv
+)
+if exist "%PATCHED_MPV_DIR%\mpv.exe" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.exe"
+    goto :found_mpv
+)
+set "PATCHED_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix-0032-bilibili-formats"
+if exist "%PATCHED_MPV_DIR%\mpv.com" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.com"
+    goto :found_mpv
+)
+if exist "%PATCHED_MPV_DIR%\mpv.exe" (
+    set "MPV=%PATCHED_MPV_DIR%\mpv.exe"
+    goto :found_mpv
+)
 set "PATCHED_MPV_DIR=%DISTRIBUTION%\mpv-omniphony-fel-windows-x86_64-ddplus-atmos-fix-0031-original-mkv-m2ts"
 if exist "%PATCHED_MPV_DIR%\mpv.com" (
     set "MPV=%PATCHED_MPV_DIR%\mpv.com"
@@ -289,6 +316,8 @@ exit /b 1
 
 :ytdlp_ok
 set "YTDL_HOOK=%DEFAULT_YTDL_HOOK%"
+rem Keep the hook's EDL metadata syntax paired with the selected mpv build.
+for %%F in ("%MPV%") do if exist "%%~dpFtools\ytdl_hook.lua" set "YTDL_HOOK=%%~dpFtools\ytdl_hook.lua"
 if defined YTDL_HOOK_PATH set "YTDL_HOOK=%YTDL_HOOK_PATH%"
 if exist "%YTDL_HOOK%" goto :ytdl_hook_ok
 echo ERROR: the Bilibili metadata-aware yt-dlp hook was not found at:
@@ -340,7 +369,7 @@ set "MPV_EXIT=%ERRORLEVEL%"
 goto :playback_finished
 
 :play_online
-"%MPV%" --vo=gpu-next --gpu-api=d3d11 "--hwdec=%MPV_HWDEC%" --target-colorspace-hint=yes "--ad=%MPV_AUDIO_DECODER%" "--ao=%MPV_AUDIO_OUTPUT%" %MPV_CHANNEL_OPTION% %MPV_MUTE_OPTION% "--input-conf=%INPUT_CONFIG%" --script-opts-append=stats-persistent_overlay=yes --script-opts-append=stats-redraw_delay=0.25 "--ad-orender-config=%CONFIG%" "--ad-orender-bridge-path=%BRIDGE%" --ad-orender-osc --ytdl=no "--script=%YTDL_HOOK%" "--script-opts-append=ytdl_hook-ytdl_path=%YTDLP%" --script-opts-append=ytdl_hook-all_formats=yes --script-opts-append=ytdl_hook-force_all_formats=yes "--ytdl-raw-options-append=cookies=%RUNTIME_COOKIE_FILE%" --ytdl-raw-options-append=ignore-config= "--ytdl-format=%BILIBILI_FORMAT%" "%PLAY_TARGET%"
+"%MPV%" --vo=gpu-next --gpu-api=d3d11 "--hwdec=%MPV_HWDEC%" --target-colorspace-hint=yes "--ad=%MPV_AUDIO_DECODER%" "--ao=%MPV_AUDIO_OUTPUT%" %MPV_CHANNEL_OPTION% %MPV_MUTE_OPTION% "--input-conf=%INPUT_CONFIG%" --script-opts-append=stats-persistent_overlay=yes --script-opts-append=stats-redraw_delay=0.25 "--ad-orender-config=%CONFIG%" "--ad-orender-bridge-path=%BRIDGE%" --ad-orender-osc --flatten-editions=yes --ytdl=no "--script=%YTDL_HOOK%" "--script-opts-append=ytdl_hook-ytdl_path=%YTDLP%" --script-opts-append=ytdl_hook-all_formats=yes --script-opts-append=ytdl_hook-force_all_formats=yes "--ytdl-raw-options-append=cookies=%RUNTIME_COOKIE_FILE%" --ytdl-raw-options-append=ignore-config= "--ytdl-format=%BILIBILI_FORMAT%" "%PLAY_TARGET%"
 set "MPV_EXIT=%ERRORLEVEL%"
 
 :playback_finished

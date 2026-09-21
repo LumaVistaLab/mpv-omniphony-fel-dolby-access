@@ -1,0 +1,156 @@
+diff --git a/DOCS/edl-mpv.rst b/DOCS/edl-mpv.rst
+--- a/DOCS/edl-mpv.rst
++++ b/DOCS/edl-mpv.rst
+@@ -239,6 +239,11 @@
+ If ``file.mkv`` has an audio and a video stream, both will use ``blabla`` as
+ title. The subtitle stream will use ``ducks`` as title.
+ 
++The optional ``fps`` parameter supplies a finite advertised video frame rate
++for format menus. It is kept separately from the demuxer frame rate and does
++not change decoding or playback timing. Positive values take precedence in
++track and edition labels, including for streams opened immediately.
++
+ The ``track_meta`` header is not part of the core EDL format. It may be changed
+ or removed at any time, depending on mpv's internal requirements.
+ 
+@@ -317,8 +322,8 @@
+ ``fps``
+     For video codecs: expected video framerate, as a finite floating-point
+     number (for example, ``23.976`` or ``59.94``). Integer rates remain valid.
+-    This is a hint for an unopened stream; opening it may refine the rate
+-    using the actual media timestamps.
++    This supplies codec metadata for a delay-open stream. To keep format menus
++    independent of probing, also set ``fps`` in its ``track_meta`` header.
+ 
+ ``samplerate``
+     For audio codecs: expected sample rate, as integer.
+diff --git a/DOCS/man/input.rst b/DOCS/man/input.rst
+--- a/DOCS/man/input.rst
++++ b/DOCS/man/input.rst
+@@ -3606,6 +3606,11 @@
+ 
+     ``track-list/N/demux-fps``
+         Video FPS as indicated by the container. (Not always accurate.)
++
++    ``track-list/N/format-fps``
++        Advertised frame rate supplied by the format list, when available.
++        Track selectors prefer this stable value over ``demux-fps``. It does
++        not affect decoding or playback timing.
+ 
+     ``track-list/N/demux-bitrate``
+         Average bitrate, in bits per second. (Not always accurate.)
+diff --git a/demux/demux.c b/demux/demux.c
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -1279,8 +1279,9 @@
+     if (c->disp_w)
+         append_field(ta_ctx, dst, skip_dup,
+                      mp_tprintf(32, "%dx%d", c->disp_w, c->disp_h));
+-    if (c->fps && !sh->image) {
+-        char *fps = mp_format_double(ta_ctx, c->fps, 4, false, false, true);
++    double format_fps = sh->format_fps > 0 ? sh->format_fps : c->fps;
++    if (format_fps > 0 && !sh->image) {
++        char *fps = mp_format_double(ta_ctx, format_fps, 4, false, false, true);
+         append_field(ta_ctx, dst, skip_dup, mp_tprintf(32, "%s fps", fps));
+     }
+     if (c->channels.num)
+diff --git a/demux/demux_edl.c b/demux/demux_edl.c
+--- a/demux/demux_edl.c
++++ b/demux/demux_edl.c
+@@ -261,6 +261,7 @@
+                 sh->lang = get_param0(&ctx, sh, "lang");
+                 sh->title = get_param0(&ctx, sh, "title");
+                 sh->hls_bitrate = get_param_int(&ctx, "byterate", 0) * 8;
++                sh->format_fps = get_param_double(&ctx, "fps", 0);
+                 int pid = get_param_int(&ctx, "program_id", -1);
+                 if (pid >= 0)
+                     MP_TARRAY_APPEND(sh, sh->program_ids, sh->num_program_ids, pid);
+diff --git a/demux/demux_timeline.c b/demux/demux_timeline.c
+--- a/demux/demux_timeline.c
++++ b/demux/demux_timeline.c
+@@ -526,6 +526,8 @@
+     dst->forced_track = src->forced_track;
+     if (src->hls_bitrate)
+         dst->hls_bitrate = src->hls_bitrate;
++    if (src->format_fps > 0)
++        dst->format_fps = src->format_fps;
+     for (int i = 0; i < src->num_program_ids; i++)
+         MP_TARRAY_APPEND(dst, dst->program_ids, dst->num_program_ids, src->program_ids[i]);
+     dst->missing_timestamps = src->missing_timestamps;
+diff --git a/demux/stheader.h b/demux/stheader.h
+--- a/demux/stheader.h
++++ b/demux/stheader.h
+@@ -69,6 +69,7 @@
+     bool image;                 // video stream is an image
+     bool still_image;           // video consists of multiple sparse still images
+     int hls_bitrate;
++    double format_fps;         // advertised frame rate for format menus only
+     int *program_ids;
+     int num_program_ids;
+ 
+diff --git a/player/command.c b/player/command.c
+--- a/player/command.c
++++ b/player/command.c
+@@ -2146,6 +2146,8 @@
+         {"demux-samplerate", SUB_PROP_INT(p.samplerate),
+                         .unavailable = !p.samplerate},
+         {"demux-fps",   SUB_PROP_DOUBLE(p.fps), .unavailable = p.fps <= 0},
++        {"format-fps",  SUB_PROP_DOUBLE(sh ? sh->format_fps : 0),
++                        .unavailable = !sh || sh->format_fps <= 0},
+         {"demux-bitrate",  SUB_PROP_INT(p.bitrate), .unavailable = p.bitrate <= 0},
+         {"demux-rotation", SUB_PROP_INT(p.rotate),  .unavailable = p.rotate <= 0},
+         {"demux-par",      SUB_PROP_DOUBLE(par),    .unavailable = par <= 0},
+diff --git a/player/lua/select.lua b/player/lua/select.lua
+--- a/player/lua/select.lua
++++ b/player/lua/select.lua
+@@ -137,6 +137,7 @@
+ local function format_track(track)
+     -- Prefer the advertised format rate over a partial-stream probe estimate.
+     local bitrate = track["hls-bitrate"] or track["demux-bitrate"]
++    local fps = track["format-fps"] or track["demux-fps"]
+ 
+     return (track.selected and "●" or "○") ..
+         (track.title and " " .. track.title or "") ..
+@@ -145,8 +146,8 @@
+             (track.codec and track.codec .. " " or "") ..
+             (track["demux-w"] and track["demux-w"] .. "x" .. track["demux-h"]
+              .. " " or "") ..
+-            (track["demux-fps"] and not track.image
+-             and string.format("%.4f", track["demux-fps"]):gsub("%.?0*$", "") ..
++            (fps and not track.image
++             and string.format("%.4f", fps):gsub("%.?0*$", "") ..
+              " fps " or "") ..
+             (track["demux-channel-count"] and track["demux-channel-count"] ..
+              "ch " or "") ..
+diff --git a/player/lua/ytdl_hook.lua b/player/lua/ytdl_hook.lua
+--- a/player/lua/ytdl_hook.lua
++++ b/player/lua/ytdl_hook.lua
+@@ -559,14 +559,16 @@
+                 -- Keep unselected alternatives and muxed formats delay-loaded.
+                 local delay_load = not is_default or #tracks > 1
+                 local props = ""
++                local format_meta = ""
+                 if sub.media_type == "video" then
+-                    -- Keep fractional rates for unopened alternatives, just as
+-                    -- the demuxer does for the selected video stream.
++                    -- Use the same advertised rate for every format-menu entry,
++                    -- including streams opened immediately for codec details.
+                     local fps = tonumber(track.fps) or 0
+                     if not (fps > 0 and fps < math.huge) then fps = 0 end
++                    format_meta = ",fps=" .. string.format("%.17g", fps)
+                     props = props .. ",w=" .. as_integer(track.width)
+                                   .. ",h=" .. as_integer(track.height)
+-                                  .. ",fps=" .. string.format("%.17g", fps)
++                                  .. format_meta
+                 elseif sub.media_type == "audio" then
+                     props = props .. ",samplerate=" .. as_integer(track.asr)
+                 end
+@@ -605,7 +607,7 @@
+                     flags[#flags + 1] = "default"
+                 end
+                 hdr[#hdr + 1] = "!track_meta,title=" ..
+-                    edl_escape(title) .. ",byterate=" .. byterate ..
++                    edl_escape(title) .. ",byterate=" .. byterate .. format_meta ..
+                     (dominated and ",program_id=" .. next_program_id or "") ..
+                     (#flags > 0 and ",flags=" .. table.concat(flags, "+") or "")
+             end
